@@ -1,4 +1,5 @@
-import { getFirebaseAdminDb } from "./firebase-admin";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 type DemandDoc = {
   date: string;
@@ -45,6 +46,53 @@ type MonthSummary = {
   grossSales: number;
   changePctVsPreviousMonth: number | null;
 };
+
+type SnapshotState = {
+  demand: DemandDoc[];
+  samples: DemandDoc[];
+  inventory: InventoryDoc[];
+  forecastSettings: ForecastSettingDoc[];
+  launchPlans: LaunchPlanDoc[];
+};
+
+const DATA_DIR = path.join(process.cwd(), "data");
+const FORECAST_DEFAULTS_FILE = path.join(DATA_DIR, "planner_forecast_defaults.json");
+const PRODUCT_METADATA: Record<
+  string,
+  {
+    cogs: number;
+    listPrice: number;
+    launchDate?: string;
+    launchInboundUnits?: number;
+    launchTransitEta?: string;
+    launchProxyProduct?: string;
+    launchStrengthPct?: number;
+    launchSampleUnits?: number;
+    launchBundleUpliftPct?: number;
+    launchCoverWeeksTarget?: number;
+  }
+> = {
+  "Birria Bomb 2-Pack": { cogs: 3.1, listPrice: 19.99 },
+  "Chile Colorado Bomb 2-Pack": {
+    cogs: 3.95,
+    listPrice: 19.99,
+    launchDate: "2026-04-29",
+    launchInboundUnits: 12096,
+    launchTransitEta: "2026-04-29",
+    launchProxyProduct: "Pozole Verde Bomb 2-Pack",
+    launchStrengthPct: 100,
+    launchSampleUnits: 0,
+    launchBundleUpliftPct: 0,
+    launchCoverWeeksTarget: 5,
+  },
+  "Pozole Bomb 2-Pack": { cogs: 3.05, listPrice: 19.99 },
+  "Pozole Verde Bomb 2-Pack": { cogs: 3.75, listPrice: 19.99, launchDate: "2026-03-10" },
+  "Tinga Bomb 2-Pack": { cogs: 3.15, listPrice: 19.99 },
+  "Brine Bomb": { cogs: 4.2, listPrice: 19.99 },
+  "Variety Pack": { cogs: 13.35, listPrice: 49.99 },
+};
+
+let cachedState: SnapshotState | null = null;
 
 function asNumber(value: unknown) {
   const numeric = Number(value ?? 0);
@@ -97,9 +145,14 @@ function uniqueSorted(values: string[]) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
-async function readCollection<T>(name: string) {
-  const snapshot = await getFirebaseAdminDb().collection(name).get();
-  return snapshot.docs.map((doc) => doc.data() as T);
+function parseCsv(text: string) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return [];
+  const headers = lines[0].split(",");
+  return lines.slice(1).map((line) => {
+    const values = line.split(",");
+    return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
+  });
 }
 
 function normalizeMixShare(value: unknown) {
@@ -108,22 +161,109 @@ function normalizeMixShare(value: unknown) {
   return numeric > 1 ? numeric / 100 : numeric;
 }
 
-async function loadState() {
-  const [demand, samples, inventory, forecastSettings, launchPlans] = await Promise.all([
-    readCollection<DemandDoc>("planningDemandDaily"),
-    readCollection<DemandDoc>("planningSamplesDaily"),
-    readCollection<InventoryDoc>("inventorySnapshots"),
-    readCollection<ForecastSettingDoc>("forecastSettings"),
-    readCollection<LaunchPlanDoc>("launchPlans"),
+function buildLaunchPlans() {
+  return Object.entries(PRODUCT_METADATA)
+    .filter(([, metadata]) => metadata.launchDate)
+    .map(([productName, metadata]) => ({
+      productName,
+      proxyProductName: metadata.launchProxyProduct || productName,
+      launchDate: metadata.launchDate || null,
+      launchUnitsCommitted: metadata.launchInboundUnits || 0,
+      launchStrengthPct: metadata.launchStrengthPct || 100,
+      launchCoverWeeksTarget: metadata.launchCoverWeeksTarget || 0,
+      launchSampleUnits: metadata.launchSampleUnits || 0,
+      launchBundleUpliftPct: metadata.launchBundleUpliftPct || 0,
+      cogs: metadata.cogs,
+      listPrice: metadata.listPrice,
+    }));
+}
+
+async function loadBundledState() {
+  if (cachedState) {
+    return cachedState;
+  }
+
+  const [demandCsv, samplesCsv, inventoryCsv, forecastDefaultsText] = await Promise.all([
+    readFile(path.join(DATA_DIR, "planning_demand_daily.csv"), "utf8"),
+    readFile(path.join(DATA_DIR, "planning_samples_daily.csv"), "utf8"),
+    readFile(path.join(DATA_DIR, "planning_inventory_daily.csv"), "utf8"),
+    readFile(FORECAST_DEFAULTS_FILE, "utf8"),
   ]);
 
-  return {
+  const demand = parseCsv(demandCsv).map((row) => ({
+    date: String(row.date || ""),
+    platform: String(row.platform || "TikTok"),
+    product_name: String(row.product_name || ""),
+    seller_sku_resolved: String(row.seller_sku_resolved || ""),
+    net_units: asNumber(row.net_units),
+    gross_sales: asNumber(row.gross_sales),
+  }));
+
+  const samples = parseCsv(samplesCsv).map((row) => ({
+    date: String(row.date || ""),
+    platform: String(row.platform || "TikTok"),
+    product_name: String(row.product_name || ""),
+    seller_sku_resolved: String(row.seller_sku_resolved || ""),
+    net_units: asNumber(row.net_units),
+    gross_sales: asNumber(row.gross_sales),
+  }));
+
+  const inventoryRows: InventoryDoc[] = parseCsv(inventoryCsv).map((row) => ({
+    snapshotDate: String(row.date || ""),
+    product_name: String(row.product_name || ""),
+    seller_sku_resolved: "",
+    on_hand: asNumber(row.on_hand),
+    in_transit: asNumber(row.in_transit),
+    transit_eta: null,
+    lead_time_days: null,
+    moq: null,
+    case_pack: null,
+  }));
+
+  const latestSnapshotDate = inventoryRows.at(-1)?.snapshotDate || formatDate(new Date());
+  const inventory = [...inventoryRows];
+  for (const [productName, metadata] of Object.entries(PRODUCT_METADATA)) {
+    if (inventory.some((row) => row.product_name === productName && row.snapshotDate === latestSnapshotDate)) {
+      continue;
+    }
+    if (!metadata.launchInboundUnits) {
+      continue;
+    }
+    inventory.push({
+      snapshotDate: latestSnapshotDate,
+      product_name: productName,
+      seller_sku_resolved: "",
+      on_hand: 0,
+      in_transit: metadata.launchInboundUnits,
+      transit_eta: metadata.launchTransitEta || null,
+      lead_time_days: null,
+      moq: null,
+      case_pack: null,
+    });
+  }
+
+  const forecastDefaults = JSON.parse(forecastDefaultsText) as {
+    months?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
+  };
+  const forecastSettings = Object.entries(forecastDefaults.months || {}).map(([yearMonth, setting]) => ({
+    yearMonth,
+    upliftPct: asNumber(setting?.upliftPct),
+    productMix: setting?.productMix || {},
+  }));
+
+  cachedState = {
     demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
     samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
-    inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate)),
+    inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
     forecastSettings,
-    launchPlans,
+    launchPlans: buildLaunchPlans(),
   };
+
+  return cachedState;
+}
+
+async function loadState() {
+  return loadBundledState();
 }
 
 function buildForecastMaps(forecastSettings: ForecastSettingDoc[]) {
@@ -197,7 +337,7 @@ function latestInventoryByProduct(inventory: InventoryDoc[]) {
 }
 
 function getUnitCogs(productName: string, launchPlans: LaunchPlanDoc[]) {
-  return asNumber(launchPlans.find((plan) => plan.productName === productName)?.cogs);
+  return asNumber(PRODUCT_METADATA[productName]?.cogs ?? launchPlans.find((plan) => plan.productName === productName)?.cogs);
 }
 
 export async function getHostedWorkspace() {
@@ -539,14 +679,18 @@ export async function runHostedPlanning(params: {
 }
 
 export async function saveHostedForecastSetting(monthKeyValue: string, setting: { upliftPct?: number; productMix?: Record<string, number> }) {
-  const db = getFirebaseAdminDb();
-  const payload = {
-    yearMonth: monthKeyValue,
+  const fileText = await readFile(FORECAST_DEFAULTS_FILE, "utf8");
+  const payload = JSON.parse(fileText) as {
+    months?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
+  };
+  payload.months = payload.months || {};
+  payload.months[monthKeyValue] = {
     upliftPct: asNumber(setting.upliftPct),
     productMix: setting.productMix || {},
   };
-  await db.collection("forecastSettings").doc(monthKeyValue).set(payload, { merge: true });
-  const settings = await readCollection<ForecastSettingDoc>("forecastSettings");
+  await writeFile(FORECAST_DEFAULTS_FILE, JSON.stringify(payload, null, 2), "utf8");
+  cachedState = null;
+  const settings = (await loadState()).forecastSettings;
   return Object.fromEntries(
     settings.map((entry) => [
       entry.yearMonth,
