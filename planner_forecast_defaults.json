@@ -1,0 +1,80 @@
+{
+  "months": {
+    "2026-05": {
+      "upliftPct": 30.0,
+      "productMix": {
+        "Birria Bomb 2-Pack": 0.5589999999999999,
+        "Pozole Bomb 2-Pack": 0.07400000000000001,
+        "Tinga Bomb 2-Pack": 0.027000000000000003,
+        "Pozole Verde Bomb 2-Pack": 0.331,
+        "Brine Bomb": 0.002,
+        "Variety Pack": 0.006999999999999999
+      }
+    },
+    "2026-08": {
+      "upliftPct": 40.0,
+      "productMix": {}
+    },
+    "2026-06": {
+      "upliftPct": 40.0,
+      "productMix": {
+        "Birria Bomb 2-Pack": 0.6679999999999999,
+        "Pozole Bomb 2-Pack": 0.141,
+        "Tinga Bomb 2-Pack": 0.039,
+        "Pozole Verde Bomb 2-Pack": 0.132,
+        "Brine Bomb": 0.004,
+        "Variety Pack": 0.016
+      }
+    },
+    "2026-11": {
+      "upliftPct": 80.0,
+      "productMix": {
+        "Birria Bomb 2-Pack": 0.35,
+        "Pozole Bomb 2-Pack": 0.1,
+        "Tinga Bomb 2-Pack": 0.05,
+        "Pozole Verde Bomb 2-Pack": 0.15,
+        "Brine Bomb": 0.3,
+        "Variety Pack": 0.05
+      }
+    },
+    "2026-09": {
+      "upliftPct": 45.0,
+      "productMix": {}
+    },
+    "2026-02": {
+      "upliftPct": 10.0,
+      "productMix": {}
+    },
+    "2026-01": {
+      "upliftPct": 10.0,
+      "productMix": {}
+    },
+    "2026-04": {
+      "upliftPct": 25.0,
+      "productMix": {}
+    },
+    "2026-10": {
+      "upliftPct": 50.0,
+      "productMix": {}
+    },
+    "2026-07": {
+      "upliftPct": 35.0,
+      "productMix": {}
+    },
+    "2026-12": {
+      "upliftPct": 60.0,
+      "productMix": {
+        "Birria Bomb 2-Pack": 0.5589999999999999,
+        "Pozole Bomb 2-Pack": 0.07400000000000001,
+        "Tinga Bomb 2-Pack": 0.027000000000000003,
+        "Pozole Verde Bomb 2-Pack": 0.331,
+        "Brine Bomb": 0.002,
+        "Variety Pack": 0.006999999999999999
+      }
+    },
+    "2026-03": {
+      "upliftPct": 0.0,
+      "productMix": {}
+    }
+  }
+}
