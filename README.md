@@ -24,3 +24,18 @@ Then open:
 - The local build uses lean rebuilt tables instead of querying raw files on every page load.
 - Large local data folders and workspace state are ignored in git.
 - See [docs/firebase-netlify-setup.md](docs/firebase-netlify-setup.md) for the recommended deploy path.
+
+## Firestore sync
+
+After adding `FIREBASE_PROJECT_ID` and `FIREBASE_SERVICE_ACCOUNT_PATH` to `.env.local`:
+
+```powershell
+python sync_firestore.py --dry-run
+python sync_firestore.py
+```
+
+If you also want the lean KPI collections:
+
+```powershell
+python sync_firestore.py --include-kpis
+```
