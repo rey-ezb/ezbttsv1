@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Demand Planning Preview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/planner-styles.css?v=20260420d">
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <div class="shell">
+      <aside class="rail glass-sheen" id="app-rail">
+        <div class="rail-top">
+          <div class="rail-chip" id="rail-chip">Demand Planning</div>
+          <button type="button" class="rail-toggle" id="rail-toggle" aria-expanded="true" aria-controls="app-rail">Collapse</button>
+        </div>
+        <h1 id="rail-title">Lean planner, separate surface.</h1>
+        <p class="lead" id="rail-lead">
+          This planner uses your 6 real products, rolls bundle sales into them,
+          and helps you decide what to reorder next.
+        </p>
+        <nav class="rail-nav" aria-label="App sections">
+          <button type="button" class="rail-link is-active" data-page-target="planning">Demand Planning</button>
+          <button type="button" class="rail-link" data-page-target="kpis">TikTok KPIs</button>
+        </nav>
+        <div class="actions">
+          <button id="load-sample-btn" class="primary">Refresh current data</button>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section class="panel panel-uploads glass-sheen">
+          <div class="panel-header">
+            <p class="eyebrow">Inputs</p>
+            <h2>Uploads</h2>
+          </div>
+          <form id="data-upload-form" class="upload-form">
+            <div class="upload-row">
+              <label class="upload-field upload-field-platform">Platform
+                <input type="text" name="platform" value="TikTok">
+              </label>
+              <label class="upload-field upload-field-type">File type
+                <select name="uploadType" id="upload-type">
+                  <option value="orders">Order files</option>
+                  <option value="samples">Sample files</option>
+                </select>
+              </label>
+              <label class="upload-field upload-field-files">Files
+                <input type="file" name="files" accept=".csv" multiple>
+              </label>
+              <div class="upload-actions">
+                <button type="submit">Upload files</button>
+              </div>
+            </div>
+            <div class="upload-meta">
+              <p class="helper">Upload new daily files here. If dates overlap, the newest file replaces the older rows for those dates.</p>
+              <div class="status-line" id="upload-status"></div>
+            </div>
+          </form>
+        </section>
+
+        <section class="page page-active" id="page-planning">
+          <section class="panel panel-summary-strip">
+            <div class="summary-block glass-sheen" id="summary-block"></div>
+          </section>
+
+          <section class="panel panel-controls glass-sheen">
+            <div class="panel-header">
+              <p class="eyebrow">Plan</p>
+              <h2>Planning period</h2>
+            </div>
+            <form id="plan-form" class="plan-layout">
+              <div class="plan-main">
+                <input type="hidden" id="uplift-pct" name="upliftPct" value="35">
+                <div class="controls-grid">
+                  <label>Baseline start<input type="date" id="baseline-start" name="baselineStart"></label>
+                  <label>Baseline end<input type="date" id="baseline-end" name="baselineEnd"></label>
+                  <label>Planning period start<input type="date" id="horizon-start" name="horizonStart"></label>
+                  <label>Planning period end<input type="date" id="horizon-end" name="horizonEnd"></label>
+                  <label>How to count demand
+                    <select id="velocity-mode" name="velocityMode">
+                      <option value="sales_only">Sales only</option>
+                      <option value="sales_plus_samples">Sales + samples</option>
+                    </select>
+                  </label>
+                  <label>Reorder lead time (days)<input type="number" id="lead-time-days" name="leadTimeDays" value="8"></label>
+                  <div class="forecast-inline-block">
+                    <span class="forecast-inline-label">Selected month plan</span>
+                    <div class="forecast-inline-copy" id="forecast-summary-copy"></div>
+                    <button type="button" class="secondary" id="open-forecast-settings">Edit selected month</button>
+                  </div>
+                  <div class="controls-foot">
+                    <div class="controls-submit">
+                      <button type="submit" class="primary">Run planning</button>
+                    </div>
+                    <div class="helper-block" id="safety-rule-note"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="month-plan-inline month-plan-summary">
+                <div class="month-plan-heading">
+                  <p class="eyebrow">Month Plan</p>
+                  <h3 id="forecast-summary-title">Selected month plan</h3>
+                </div>
+                <div class="forecast-summary-list" id="forecast-summary-list"></div>
+              </div>
+            </form>
+          </section>
+
+          <dialog id="forecast-settings-dialog" class="forecast-dialog">
+            <form method="dialog" class="forecast-dialog-shell">
+              <div class="forecast-dialog-head">
+                <div>
+                  <p class="eyebrow">Month Setup</p>
+                  <h2>Selected month settings</h2>
+                </div>
+                <button type="button" class="secondary" id="close-forecast-settings">Close</button>
+              </div>
+              <div class="forecast-dialog-status-row">
+                <span class="forecast-status-pill" id="forecast-status-pill">New month setting</span>
+                <span class="forecast-baseline-copy" id="forecast-baseline-copy">Using the current selected baseline window.</span>
+              </div>
+              <div class="forecast-dialog-grid">
+                <label>Year
+                  <input type="number" id="forecast-year-input" step="1" min="2024" max="2035">
+                </label>
+                <label>Month
+                  <select id="forecast-month-picker"></select>
+                </label>
+                <label>Planned change vs prior month %
+                  <input type="number" id="forecast-month-uplift" step="0.1">
+                </label>
+              </div>
+              <div class="forecast-dialog-copy">
+                Set the month-level change, then choose the product share for that month. If you do not save a custom split, the planner falls back to the selected baseline mix. Product share should add up to 100%.
+              </div>
+              <div class="forecast-product-mix-inputs" id="forecast-product-mix-inputs"></div>
+              <div class="forecast-total-row">
+                <span>Selected month mix total</span>
+                <strong id="forecast-mix-total">0%</strong>
+              </div>
+              <div class="forecast-dialog-actions">
+                <button type="button" class="secondary" id="reset-forecast-settings">Reset to baseline mix</button>
+                <button type="button" class="primary" id="save-forecast-settings">Save selected month</button>
+              </div>
+            </form>
+          </dialog>
+
+          <section class="panel panel-results panel-results-primary glass-sheen">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Results</p>
+                <h2>Reorder recommendations</h2>
+              </div>
+              <div class="result-summary" id="result-summary"></div>
+            </div>
+            <div class="table-wrap">
+              <table id="results-table">
+                <thead id="results-head"></thead>
+                <tbody id="results-body">
+                  <tr><td colspan="16" class="empty">Loading your planning view.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel panel-results panel-results-secondary panel-history glass-sheen">
+            <div class="panel-header panel-header-history">
+              <div>
+                <p class="eyebrow">Historical Trends</p>
+                <h2>Monthly plan and baseline mix</h2>
+                <p class="panel-subcopy" id="history-section-copy">Switch between the year view and the baseline mix table without making the page longer.</p>
+                <div class="planner-compare-links">
+                  <a class="planner-compare-link" id="planner-compare-link" href="/?plannerVariant=year-jump">Compare with 1-click year view</a>
+                  <a class="planner-compare-link" id="planner-current-link" href="/">Back to current view</a>
+                </div>
+              </div>
+              <div class="panel-year-tools">
+                <div class="panel-year-switcher" data-year-control="switcher" hidden>
+                  <span class="panel-year-switcher-label">Jump year</span>
+                  <div class="panel-year-switcher-buttons" id="planning-year-switcher"></div>
+                </div>
+                <div class="panel-year-control" data-year-control="input">
+                  <label>Plan year
+                    <input type="number" id="planning-year" min="2024" max="2035" step="1">
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="workspace-tab-strip history-tab-strip" id="history-tab-strip">
+              <button type="button" class="workspace-tab is-active" data-history-tab="monthly">Monthly plan</button>
+              <button type="button" class="workspace-tab" data-history-tab="baseline">Baseline mix</button>
+              <button type="button" class="workspace-tab" data-history-tab="trends">Historical trends</button>
+              <button type="button" class="workspace-tab" data-history-tab="launch">Launch planning</button>
+            </div>
+            <div class="history-tab-panels">
+              <section class="history-tab-panel is-active" data-history-panel="monthly">
+                <div class="panel-header panel-header-inner">
+                  <div>
+                    <p class="eyebrow">Year View</p>
+                    <h3>Monthly unit plan</h3>
+                    <p class="panel-subcopy" id="monthly-plan-copy">Shows the selected plan year by month.</p>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table id="monthly-plan-table">
+                    <thead id="monthly-plan-head"></thead>
+                    <tbody id="monthly-plan-body">
+                      <tr><td colspan="14" class="empty">Run planning to see Jan to Dec units.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="history-tab-panel" data-history-panel="baseline">
+                <div class="panel-header panel-header-inner">
+                  <div>
+                    <p class="eyebrow">Mix</p>
+                    <h3>Baseline mix for the selected date range</h3>
+                    <p class="panel-subcopy">Shows the starting product share from your baseline window. This split is the default fallback for future months without a saved month-specific mix.</p>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table id="product-mix-table">
+                    <thead id="product-mix-head"></thead>
+                    <tbody id="product-mix-body">
+                      <tr><td colspan="6" class="empty">Run planning to see product mix.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="history-tab-panel" data-history-panel="trends">
+                <div class="panel-header panel-header-inner">
+                  <div>
+                    <p class="eyebrow">Historical Trends</p>
+                    <h3>Actual performance by year</h3>
+                    <p class="panel-subcopy" id="historical-trend-copy">Review actual demand from prior years without making the page longer.</p>
+                  </div>
+                </div>
+                <div class="history-tab-panels history-tab-panels-nested">
+                  <section class="history-card">
+                    <div class="panel-header panel-header-inner">
+                      <div>
+                        <p class="eyebrow">Totals</p>
+                        <h3>Monthly actual units by year</h3>
+                      </div>
+                    </div>
+                    <div class="table-wrap">
+                      <table id="historical-totals-table">
+                        <thead id="historical-totals-head"></thead>
+                        <tbody id="historical-totals-body">
+                          <tr><td colspan="14" class="empty">Run planning to load actual history.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section class="history-card">
+                    <div class="panel-header panel-header-inner">
+                      <div>
+                        <p class="eyebrow">Core Products</p>
+                        <h3>Actual monthly units for the selected year</h3>
+                      </div>
+                    </div>
+                    <div class="table-wrap">
+                      <table id="historical-products-table">
+                        <thead id="historical-products-head"></thead>
+                        <tbody id="historical-products-body">
+                          <tr><td colspan="14" class="empty">Run planning to load product history.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section class="history-card">
+                    <div class="panel-header panel-header-inner">
+                      <div>
+                        <p class="eyebrow">YoY</p>
+                        <h3>Selected year vs previous year</h3>
+                      </div>
+                    </div>
+                    <div class="table-wrap">
+                      <table id="historical-yoy-table">
+                        <thead id="historical-yoy-head"></thead>
+                        <tbody id="historical-yoy-body">
+                          <tr><td colspan="4" class="empty">Run planning to load YoY change.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </section>
+
+              <section class="history-tab-panel" data-history-panel="launch">
+                <div class="panel-header panel-header-inner">
+                  <div>
+                    <p class="eyebrow">Launch Planning</p>
+                    <h3>New product send planning</h3>
+                    <p class="panel-subcopy" id="launch-planning-copy">Review proxy launch curves and coverage assumptions for new products.</p>
+                  </div>
+                </div>
+                <div class="launch-planning-grid" id="launch-planning-grid">
+                  <section class="history-card">
+                    <div class="panel-header panel-header-inner">
+                      <div>
+                        <p class="eyebrow">Reference</p>
+                        <h3>Proxy launch curve</h3>
+                      </div>
+                    </div>
+                    <div class="table-wrap">
+                      <table id="launch-reference-table">
+                        <thead id="launch-reference-head"></thead>
+                        <tbody id="launch-reference-body">
+                          <tr><td colspan="6" class="empty">Run planning to load launch references.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section class="history-card">
+                    <div class="panel-header panel-header-inner">
+                      <div>
+                        <p class="eyebrow">Scenario</p>
+                        <h3>Coverage from committed units</h3>
+                      </div>
+                    </div>
+                    <div class="table-wrap">
+                      <table id="launch-scenarios-table">
+                        <thead id="launch-scenarios-head"></thead>
+                        <tbody id="launch-scenarios-body">
+                          <tr><td colspan="10" class="empty">Run planning to load launch scenarios.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+              </section>
+            </div>
+          </section>
+        </section>
+
+        <section class="page" id="page-kpis">
+          <section class="panel panel-kpi-filters glass-sheen">
+            <div class="panel-header">
+              <p class="eyebrow">Core Filters</p>
+              <h2>TikTok KPI dashboard</h2>
+            </div>
+            <form id="kpi-filter-form" class="kpi-filter-form">
+              <input type="hidden" id="kpi-output" value="analysis_output">
+              <div class="kpi-filter-grid">
+                <label>Date basis
+                  <select id="kpi-date-basis">
+                    <option value="order">Order Date</option>
+                    <option value="statement">Statement Date</option>
+                  </select>
+                </label>
+                <label>Order bucket
+                  <select id="kpi-order-bucket">
+                    <option value="paid_time">Paid Time</option>
+                    <option value="file_month">File Month</option>
+                  </select>
+                </label>
+                <label>Start
+                  <input type="date" id="kpi-start-date">
+                </label>
+                <label>End
+                  <input type="date" id="kpi-end-date">
+                </label>
+              </div>
+              <fieldset class="kpi-source-group">
+                <legend>Sources</legend>
+                <label class="source-pill">
+                  <input type="checkbox" value="Sales" checked>
+                  <span class="source-pill-mark"></span>
+                  <span class="source-pill-text">Sales</span>
+                </label>
+                <label class="source-pill">
+                  <input type="checkbox" value="Samples">
+                  <span class="source-pill-mark"></span>
+                  <span class="source-pill-text">Samples</span>
+                </label>
+                <label class="source-pill">
+                  <input type="checkbox" value="Replacements">
+                  <span class="source-pill-mark"></span>
+                  <span class="source-pill-text">Replacements</span>
+                </label>
+              </fieldset>
+            </form>
+          </section>
+
+          <section class="panel panel-kpi-badges glass-sheen">
+            <div class="badge-row" id="kpi-badges-row"></div>
+            <div class="badge-row badge-row-muted" id="kpi-quality-row"></div>
+          </section>
+
+          <section class="panel panel-kpi-cards glass-sheen">
+            <div class="kpi-card-grid" id="kpi-cards-grid"></div>
+          </section>
+
+          <section class="panel panel-kpi-detail glass-sheen">
+            <details id="kpi-detail-toggle" class="disclosure-panel">
+              <summary class="disclosure-summary">
+                <div>
+                  <p class="eyebrow">Card Detail</p>
+                  <h2 id="kpi-card-detail-title">Orders Gross Sales</h2>
+                </div>
+                <span class="disclosure-hint">Expand</span>
+              </summary>
+              <div class="disclosure-content">
+                <p class="panel-copy" id="kpi-card-detail-copy"></p>
+                <div class="kpi-detail-meta">
+                  <div>
+                    <h3>Formula</h3>
+                    <p id="kpi-card-detail-formula"></p>
+                  </div>
+                  <div>
+                    <h3>Fields used</h3>
+                    <p id="kpi-card-detail-fields"></p>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table id="kpi-card-detail-table">
+                    <thead id="kpi-card-detail-head"></thead>
+                    <tbody id="kpi-card-detail-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel panel-kpi-tabs glass-sheen">
+            <div class="workspace-tab-strip" id="kpi-tab-strip">
+              <button type="button" class="workspace-tab is-active" data-kpi-tab="orders">Orders</button>
+              <button type="button" class="workspace-tab" data-kpi-tab="finance">Finance</button>
+              <button type="button" class="workspace-tab" data-kpi-tab="reconciliation">Reconciliation</button>
+              <button type="button" class="workspace-tab" data-kpi-tab="products">Products</button>
+              <button type="button" class="workspace-tab" data-kpi-tab="customers">Customers</button>
+              <button type="button" class="workspace-tab" data-kpi-tab="audit">Audit</button>
+            </div>
+          </section>
+
+          <section class="panel panel-kpi-workspace glass-sheen">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Workspace</p>
+                <h2 id="kpi-workspace-title">Orders / paid time</h2>
+              </div>
+            </div>
+            <div id="kpi-workspace-content" class="kpi-workspace-content"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="/planner-app.js?v=20260420d"></script>
+  </body>
+</html>
