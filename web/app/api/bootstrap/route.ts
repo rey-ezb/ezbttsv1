@@ -1,11 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getHostedWorkspace, runHostedPlanning } from "@/lib/hosted-planner";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function GET(request: NextRequest) {
   try {
-    const workspace = await getHostedWorkspace({ forceRefresh: true });
+    const forceRefresh = request.nextUrl.searchParams.get("refresh") === "1";
+    const workspace = await getHostedWorkspace({ forceRefresh });
     const plan = await runHostedPlanning(
       {
         baselineStart: workspace.defaults.baselineStart,
@@ -20,10 +21,11 @@ export async function POST() {
       },
       { forceRefresh: false },
     );
+
     return NextResponse.json({ ok: true, workspace, plan });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Could not refresh current data." },
+      { error: error instanceof Error ? error.message : "Could not load planner bootstrap." },
       { status: 500 },
     );
   }

@@ -502,8 +502,13 @@ function renderSummary(summary, hasInventory) {
   const inventoryLabel = hasInventory
     ? `Live sheet${summary.inventory_as_of ? ` (${summary.inventory_as_of})` : ""}`
     : "Template only";
+  const sourceLabel = summary.data_source === "live" ? "Live Firestore" : "Hosted snapshot";
+  const dataAsOfLabel = summary.data_as_of || summary.date_end || "—";
+  const sourceDetail = summary.data_source_detail || "";
   summaryBlock.innerHTML = `
     <dl class="summary-list">
+      <div><dt>Data source</dt><dd>${sourceLabel}</dd></div>
+      <div><dt>Data as of</dt><dd>${dataAsOfLabel}</dd></div>
       <div><dt>Order rows</dt><dd>${integer(summary.orders_loaded)}</dd></div>
       <div><dt>Sample rows</dt><dd>${integer(summary.samples_loaded || 0)}</dd></div>
       <div><dt>Planning products</dt><dd>${integer(summary.products_detected)}</dd></div>
@@ -511,6 +516,7 @@ function renderSummary(summary, hasInventory) {
       <div><dt>History end</dt><dd>${summary.date_end || "—"}</dd></div>
       <div><dt>Inventory</dt><dd>${inventoryLabel}</dd></div>
     </dl>
+    ${sourceDetail ? `<p class="summary-note">${sourceDetail}</p>` : ""}
   `;
 }
 
@@ -1784,13 +1790,14 @@ async function loadKpis() {
 }
 
 async function loadWorkspace() {
-  const response = await fetch("/api/workspace");
+  const response = await fetch("/api/bootstrap");
   const payload = await response.json();
-  inventoryUploaded = Boolean(payload.inventoryUploaded);
-  renderSummary(payload.summary || {}, inventoryUploaded);
-  applyDefaults(payload.defaults || {});
-  applyPlannerVariant(payload.summary || {});
-  const summary = payload.summary || {};
+  const workspace = payload.workspace || payload;
+  inventoryUploaded = Boolean(workspace.inventoryUploaded);
+  renderSummary(workspace.summary || {}, inventoryUploaded);
+  applyDefaults(workspace.defaults || {});
+  applyPlannerVariant(workspace.summary || {});
+  const summary = workspace.summary || {};
   if (summary.date_end) {
     const endDate = new Date(summary.date_end);
     const startDate = new Date(endDate);
@@ -1807,7 +1814,11 @@ async function loadWorkspace() {
   Array.from(kpiFilterForm.querySelectorAll('.source-pill input[type="checkbox"]')).forEach((input) => {
     input.checked = input.value === "Sales";
   });
-  await runPlanningFromForm(false);
+  if (payload.plan) {
+    renderResults(payload.plan);
+  } else {
+    await runPlanningFromForm(false);
+  }
 }
 
 async function postForm(url, form) {
@@ -1820,12 +1831,17 @@ async function postForm(url, form) {
 loadSampleBtn.addEventListener("click", async () => {
   try {
     setStatus("Refreshing current data...");
-    const response = await fetch("/api/load-sample", { method: "POST" });
+    const response = await fetch("/api/bootstrap?refresh=1");
     const payload = await response.json();
-    inventoryUploaded = Boolean(payload.workspace.inventoryUploaded);
-    renderSummary(payload.workspace.summary || {}, inventoryUploaded);
-    applyDefaults(payload.workspace.defaults || {});
-    await runPlanningFromForm(false);
+    const workspace = payload.workspace || payload;
+    inventoryUploaded = Boolean(workspace.inventoryUploaded);
+    renderSummary(workspace.summary || {}, inventoryUploaded);
+    applyDefaults(workspace.defaults || {});
+    if (payload.plan) {
+      renderResults(payload.plan);
+    } else {
+      await runPlanningFromForm(false);
+    }
     setStatus("Current data refreshed.");
   } catch (error) {
     setStatus(error.message || "Could not refresh current data.", true);

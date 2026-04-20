@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { getFirebaseAdminDb } from "./firebase-admin";
 
 type DemandDoc = {
   date: string;
@@ -55,8 +56,16 @@ type SnapshotState = {
   launchPlans: LaunchPlanDoc[];
 };
 
+type LoadedState = {
+  state: SnapshotState;
+  source: "live" | "snapshot";
+  detail: string;
+  loadedAt: string;
+};
+
 const DATA_DIR = path.join(process.cwd(), "data");
 const FORECAST_DEFAULTS_FILE = path.join(DATA_DIR, "planner_forecast_defaults.json");
+const LIVE_CACHE_MS = 5 * 60 * 1000;
 const PRODUCT_METADATA: Record<
   string,
   {
@@ -92,7 +101,8 @@ const PRODUCT_METADATA: Record<
   "Variety Pack": { cogs: 13.35, listPrice: 49.99 },
 };
 
-let cachedState: SnapshotState | null = null;
+let liveStateCache: { expiresAt: number; value: LoadedState } | null = null;
+let snapshotStateCache: SnapshotState | null = null;
 
 function asNumber(value: unknown) {
   const numeric = Number(value ?? 0);
@@ -145,6 +155,15 @@ function uniqueSorted(values: string[]) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
+function toErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function isQuotaError(error: unknown) {
+  const message = toErrorMessage(error).toLowerCase();
+  return message.includes("resource_exhausted") || message.includes("quota exceeded");
+}
+
 function parseCsv(text: string) {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (!lines.length) return [];
@@ -179,8 +198,8 @@ function buildLaunchPlans() {
 }
 
 async function loadBundledState() {
-  if (cachedState) {
-    return cachedState;
+  if (snapshotStateCache) {
+    return snapshotStateCache;
   }
 
   const [demandCsv, samplesCsv, inventoryCsv, forecastDefaultsText] = await Promise.all([
@@ -251,7 +270,7 @@ async function loadBundledState() {
     productMix: setting?.productMix || {},
   }));
 
-  cachedState = {
+  snapshotStateCache = {
     demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
     samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
     inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
@@ -259,11 +278,61 @@ async function loadBundledState() {
     launchPlans: buildLaunchPlans(),
   };
 
-  return cachedState;
+  return snapshotStateCache;
 }
 
-async function loadState() {
-  return loadBundledState();
+async function readCollection<T>(name: string) {
+  const snapshot = await getFirebaseAdminDb().collection(name).get();
+  return snapshot.docs.map((doc) => doc.data() as T);
+}
+
+async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
+  const now = Date.now();
+  if (!forceRefresh && liveStateCache && liveStateCache.expiresAt > now) {
+    return liveStateCache.value;
+  }
+
+  const [demand, samples, inventory, forecastSettings, launchPlans] = await Promise.all([
+    readCollection<DemandDoc>("planningDemandDaily"),
+    readCollection<DemandDoc>("planningSamplesDaily"),
+    readCollection<InventoryDoc>("inventorySnapshots"),
+    readCollection<ForecastSettingDoc>("forecastSettings"),
+    readCollection<LaunchPlanDoc>("launchPlans"),
+  ]);
+
+  const value: LoadedState = {
+    state: {
+      demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
+      samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
+      inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
+      forecastSettings,
+      launchPlans,
+    },
+    source: "live",
+    detail: "Live Firestore",
+    loadedAt: new Date().toISOString(),
+  };
+
+  liveStateCache = {
+    value,
+    expiresAt: now + LIVE_CACHE_MS,
+  };
+
+  return value;
+}
+
+async function loadState(options: { forceRefresh?: boolean } = {}): Promise<LoadedState> {
+  try {
+    return await loadLiveState(Boolean(options.forceRefresh));
+  } catch (error) {
+    const snapshotState = await loadBundledState();
+    return {
+      state: snapshotState,
+      source: "snapshot",
+      detail: isQuotaError(error) ? "Snapshot fallback after Firestore quota limit" : `Snapshot fallback after live read failed: ${toErrorMessage(error)}`,
+      loadedAt: new Date().toISOString(),
+    };
+  }
 }
 
 function buildForecastMaps(forecastSettings: ForecastSettingDoc[]) {
@@ -340,8 +409,8 @@ function getUnitCogs(productName: string, launchPlans: LaunchPlanDoc[]) {
   return asNumber(PRODUCT_METADATA[productName]?.cogs ?? launchPlans.find((plan) => plan.productName === productName)?.cogs);
 }
 
-export async function getHostedWorkspace() {
-  const state = await loadState();
+function buildWorkspace(stateInfo: LoadedState) {
+  const state = stateInfo.state;
   const latestDemandDate = state.demand.at(-1)?.date || formatDate(new Date());
   const baselineEnd = latestDemandDate;
   const baselineStart = formatDate(addDays(latestDemandDate, -29));
@@ -360,6 +429,10 @@ export async function getHostedWorkspace() {
       products_detected: uniqueSorted(state.demand.map((row) => row.product_name)).length,
       date_start: state.demand[0]?.date || null,
       date_end: latestDemandDate,
+      data_as_of: latestDemandDate,
+      data_source: stateInfo.source,
+      data_source_detail: stateInfo.detail,
+      data_loaded_at: stateInfo.loadedAt,
       inventory_as_of: latestInventoryDate,
       inventory_rows: latestInventoryByProduct(state.inventory).size,
     },
@@ -379,6 +452,10 @@ export async function getHostedWorkspace() {
       monthlyActuals,
     },
   };
+}
+
+export async function getHostedWorkspace(options: { forceRefresh?: boolean } = {}) {
+  return buildWorkspace(await loadState(options));
 }
 
 function buildHistoricalTrend(productMonthly: Map<string, Map<string, number>>, focusYear: number) {
@@ -475,9 +552,10 @@ export async function runHostedPlanning(params: {
   monthlyForecastSettings?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
   upliftPct?: number;
   planningYear?: number;
-}) {
-  const state = await loadState();
-  const workspace = await getHostedWorkspace();
+}, options: { forceRefresh?: boolean } = {}) {
+  const stateInfo = await loadState(options);
+  const state = stateInfo.state;
+  const workspace = buildWorkspace(stateInfo);
   const baselineStart = params.baselineStart || workspace.defaults.baselineStart;
   const baselineEnd = params.baselineEnd || workspace.defaults.baselineEnd;
   const horizonStart = params.horizonStart || workspace.defaults.horizonStart;
@@ -679,18 +757,33 @@ export async function runHostedPlanning(params: {
 }
 
 export async function saveHostedForecastSetting(monthKeyValue: string, setting: { upliftPct?: number; productMix?: Record<string, number> }) {
-  const fileText = await readFile(FORECAST_DEFAULTS_FILE, "utf8");
-  const payload = JSON.parse(fileText) as {
-    months?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
-  };
-  payload.months = payload.months || {};
-  payload.months[monthKeyValue] = {
+  const payload = {
+    yearMonth: monthKeyValue,
     upliftPct: asNumber(setting.upliftPct),
     productMix: setting.productMix || {},
   };
-  await writeFile(FORECAST_DEFAULTS_FILE, JSON.stringify(payload, null, 2), "utf8");
-  cachedState = null;
-  const settings = (await loadState()).forecastSettings;
+
+  await getFirebaseAdminDb().collection("forecastSettings").doc(monthKeyValue).set(payload, { merge: true });
+
+  liveStateCache = null;
+  let settings = (await loadState({ forceRefresh: true })).state.forecastSettings;
+
+  try {
+    const fileText = await readFile(FORECAST_DEFAULTS_FILE, "utf8");
+    const filePayload = JSON.parse(fileText) as {
+      months?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
+    };
+    filePayload.months = filePayload.months || {};
+    filePayload.months[monthKeyValue] = {
+      upliftPct: payload.upliftPct,
+      productMix: payload.productMix,
+    };
+    await writeFile(FORECAST_DEFAULTS_FILE, JSON.stringify(filePayload, null, 2), "utf8");
+    snapshotStateCache = null;
+  } catch {
+    // Ignore local snapshot write failures in hosted/serverless environments.
+  }
+
   return Object.fromEntries(
     settings.map((entry) => [
       entry.yearMonth,
