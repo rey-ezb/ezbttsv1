@@ -143,6 +143,15 @@ function percent(value) {
   return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(Number(value) * 100)}%`;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 const HEADER_HELP = {
   "Daily velocity": "Average units sold per day from the selected baseline dates.",
   "Order units": "Actual units sold in the selected baseline date range.",
@@ -154,9 +163,9 @@ const HEADER_HELP = {
   "Usable supply": "Supply we can count for planning right now: on hand plus inbound expected in time.",
   "Weeks good": "How many weeks the usable supply should last at the current daily velocity.",
   "Safety stock": "Extra units kept as protection before the next order should arrive.",
-  "Run out date": "Projected date this product reaches zero if demand keeps moving at the current rate.",
-  "Reorder date": "The order-by date: when you should place the order so lead time and safety stock are covered.",
-  "Order now": "Recommended units to order today after supply, lead time, and safety stock are applied.",
+  "Projected stockout date": "Projected stockout date if demand keeps moving at the current rate.",
+  "Order-by date": "Latest date to place the order so lead time and safety stock are covered.",
+  "Order today": "Recommended units to order today after supply, lead time, and safety stock are applied.",
   "Units in baseline window": "Actual units sold during the selected baseline date range.",
   "Baseline unit share %": "This product's share of all baseline units sold.",
   "Baseline sales share %": "This product's share of all baseline gross sales.",
@@ -169,14 +178,14 @@ const HEADER_HELP = {
 function renderHeaderCell(label, options = {}) {
   const help = options.help ?? HEADER_HELP[label];
   if (!help) {
-    return `<th>${label}</th>`;
+    return `<th>${escapeHtml(label)}</th>`;
   }
   return `
     <th>
       <span class="th-help">
-        <span>${label}</span>
-        <button type="button" class="th-help-trigger" aria-label="More info about ${label}">?</button>
-        <span class="th-help-bubble">${help}</span>
+        <span>${escapeHtml(label)}</span>
+        <button type="button" class="th-help-trigger" title="${escapeHtml(help)}" aria-label="More info about ${escapeHtml(label)}">?</button>
+        <span class="th-help-bubble">${escapeHtml(help)}</span>
       </span>
     </th>
   `;
@@ -556,9 +565,9 @@ function renderResults(payload) {
         ["Usable supply", "current_supply_units"],
         ["Weeks good", "weeks_of_supply"],
         ["Safety stock", "safety_stock_units"],
-        ["Run out date", "projected_stockout_date"],
-        ["Reorder date", "reorder_date"],
-        ["Order now", "recommended_order_units"],
+        ["Projected stockout date", "projected_stockout_date"],
+        ["Order-by date", "reorder_date"],
+        ["Order today", "recommended_order_units"],
       ]
     : [
         ["Product", "product_name"],
@@ -575,9 +584,9 @@ function renderResults(payload) {
         ["Usable supply", "current_supply_units"],
         ["Weeks good", "weeks_of_supply"],
         ["Safety stock", "safety_stock_units"],
-        ["Run out date", "projected_stockout_date"],
-        ["Reorder date", "reorder_date"],
-        ["Order now", "recommended_order_units"],
+        ["Projected stockout date", "projected_stockout_date"],
+        ["Order-by date", "reorder_date"],
+        ["Order today", "recommended_order_units"],
       ];
   resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
   resultSummary.innerHTML = `
