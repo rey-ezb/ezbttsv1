@@ -21,3 +21,5 @@ preview.err.log
 server8091.out.log
 server8091.err.log
 _run_8091.py
+
+.vercel
