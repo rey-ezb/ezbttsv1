@@ -10,6 +10,9 @@ __pycache__/
 venv/
 env/
 .env.local
+web/.env.local
+web/node_modules/
+web/.next/
 firebase-service-account*.json
 server.out.log
 server.err.log

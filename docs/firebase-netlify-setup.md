@@ -68,16 +68,17 @@ Do not upload the heavy raw folders:
 
 ## Netlify path
 
-The current Python app is good for local iteration, but it is not the best direct Netlify target.
+The current Python app is still the best local source-of-truth for fast iteration.
 
-Recommended next migration:
+The hosted path now has a first working layer:
 
-1. Build a small Next.js frontend shell for Netlify
-2. Move the demand-planning API routes into Next.js route handlers
-3. Read and write lean data from Firebase
-4. Keep the planning math in shared server-side modules
+1. a small Next.js wrapper in [`web/`](C:/Users/Rey/Desktop/codex/Demand%20planning/web)
+2. Firebase as the lean database
+3. Netlify as the hosted runtime
 
-Netlify handles static output directly. If the hosted app uses server routes or SSR later, Netlify will map that server-side code through the framework adapter during build.
+This wrapper already builds successfully and reads Firestore through the Firebase Admin SDK.
+
+Netlify handles Next.js server routes and SSR through its runtime automatically during build.
 
 ## Migration steps
 
@@ -86,9 +87,9 @@ Netlify handles static output directly. If the hosted app uses server routes or 
 3. Add service credentials for local admin scripts
 4. Define the lean collections above
 5. Write a one-time importer that takes the local lean tables and writes them into Firebase
-6. Create a Next.js app in the repo for hosted deployment
+6. Use the existing `web/` Next.js app in the repo for hosted deployment
 7. Add Firebase config and secrets to Netlify environment variables
-8. Add a `netlify.toml` file with the right framework build settings
+8. Keep the root `netlify.toml` so Netlify builds from `web/`
 9. Move the current `/api/workspace`, `/api/plan`, `/api/forecast-settings`, and KPI endpoints into Next.js route handlers
 10. Connect the GitHub repo to Netlify for continuous deploys
 11. Use `netlify dev` locally when you want Netlify-style preview behavior
@@ -105,6 +106,35 @@ netlify deploy --prod
 ```
 
 If you prefer Git-based deploys, you can link the GitHub repo in Netlify and let pushes trigger previews and production deploys.
+
+## Netlify environment variables
+
+Add these in Netlify Site configuration > Environment variables:
+
+- `NEXT_PUBLIC_FIREBASE_API_KEY`
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
+- `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
+- `NEXT_PUBLIC_FIREBASE_APP_ID`
+- `FIREBASE_SERVICE_ACCOUNT_JSON`
+
+`FIREBASE_SERVICE_ACCOUNT_JSON` should be the full JSON key on one line, not a file path.
+
+## Current status
+
+Already done:
+
+1. Firestore project created
+2. Lean planning data synced into Firestore
+3. Next.js wrapper created in `web/`
+4. Production build passes locally with Firebase env vars
+
+Next step:
+
+1. connect the GitHub repo to Netlify
+2. paste the environment variables above
+3. deploy the `web/` app
 
 ## Why this is the right path
 
