@@ -292,15 +292,36 @@ h3 {
   line-height: 1.35;
 }
 
+.panel-year-control {
+  padding: 12px 14px;
+  border: 1px solid rgba(88, 131, 214, 0.22);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(242, 247, 255, 0.42));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.44);
+}
+
 .panel-year-control label {
   display: grid;
   gap: 6px;
-  color: var(--muted);
+  color: #35518d;
   font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .panel-year-control input {
   width: 120px;
+  border-color: rgba(88, 131, 214, 0.28);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.panel-year-tools {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
 }
 
 .planner-compare-links {
@@ -798,7 +819,9 @@ button:hover,
 }
 
 .panel-header-history {
+  display: grid;
   align-items: end;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .panel-header-inner {
@@ -838,6 +861,7 @@ button:hover,
 .launch-planning-grid {
   display: grid;
   gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .panel-kpi-filters,
@@ -1402,6 +1426,57 @@ button:hover,
   max-width: 100%;
 }
 
+.th-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.th-help-trigger {
+  min-width: 18px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(88, 131, 214, 0.28);
+  background: rgba(66, 103, 178, 0.08);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.th-help-bubble {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 12;
+  width: min(240px, 50vw);
+  padding: 10px 12px;
+  border: 1px solid rgba(98, 120, 156, 0.2);
+  border-radius: 12px;
+  background: rgba(18, 28, 45, 0.94);
+  color: #f4f8ff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-transform: none;
+  box-shadow: 0 16px 36px rgba(20, 29, 44, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.th-help:hover .th-help-bubble,
+.th-help:focus-within .th-help-bubble {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 body.rail-collapsed .shell {
   grid-template-columns: 136px minmax(0, 1fr);
 }
@@ -1457,12 +1532,6 @@ thead th:first-child {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
-}
-
-@media (min-width: 1180px) {
-  .launch-planning-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 .table-mode-note {
@@ -1617,5 +1686,10 @@ th {
 
   .panel-header-history {
     align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .panel-year-tools {
+    justify-items: start;
   }
 }

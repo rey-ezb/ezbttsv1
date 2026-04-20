@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css?v=20260420a">
+    <link rel="stylesheet" href="/styles.css?v=20260420c">
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -179,14 +179,16 @@
                   <a class="planner-compare-link" id="planner-current-link" href="/">Back to current view</a>
                 </div>
               </div>
-              <div class="panel-year-control" data-year-control="input">
-                <label>Plan year
-                  <input type="number" id="planning-year" min="2024" max="2035" step="1">
-                </label>
-              </div>
-              <div class="panel-year-switcher" data-year-control="switcher" hidden>
-                <span class="panel-year-switcher-label">Jump year</span>
-                <div class="panel-year-switcher-buttons" id="planning-year-switcher"></div>
+              <div class="panel-year-tools">
+                <div class="panel-year-switcher" data-year-control="switcher" hidden>
+                  <span class="panel-year-switcher-label">Jump year</span>
+                  <div class="panel-year-switcher-buttons" id="planning-year-switcher"></div>
+                </div>
+                <div class="panel-year-control" data-year-control="input">
+                  <label>Plan year
+                    <input type="number" id="planning-year" min="2024" max="2035" step="1">
+                  </label>
+                </div>
               </div>
             </div>
             <div class="workspace-tab-strip history-tab-strip" id="history-tab-strip">
@@ -452,6 +454,6 @@
       </main>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-    <script src="/app.js?v=20260420a"></script>
+    <script src="/app.js?v=20260420c"></script>
   </body>
 </html>

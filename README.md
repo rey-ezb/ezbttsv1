@@ -23,4 +23,4 @@ Then open:
 
 - The local build uses lean rebuilt tables instead of querying raw files on every page load.
 - Large local data folders and workspace state are ignored in git.
-- See [docs/firebase-vercel-setup.md](docs/firebase-vercel-setup.md) for the recommended deploy path.
+- See [docs/firebase-netlify-setup.md](docs/firebase-netlify-setup.md) for the recommended deploy path.

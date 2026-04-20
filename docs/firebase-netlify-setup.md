@@ -1,8 +1,8 @@
-# Firebase + Vercel setup
+# Firebase + Netlify setup
 
 This project currently runs as a local Python preview app. The recommended hosted shape is:
 
-1. Vercel for the web app
+1. Netlify for the web app
 2. Firebase for lean app data
 3. Raw files kept out of the hosted runtime
 
@@ -66,16 +66,18 @@ Do not upload the heavy raw folders:
 ### `kpiTables`
 - lean summary documents only
 
-## Vercel path
+## Netlify path
 
-The current Python app is good for local iteration, but it is not the best direct Vercel target.
+The current Python app is good for local iteration, but it is not the best direct Netlify target.
 
 Recommended next migration:
 
-1. Build a small Next.js frontend shell on Vercel
+1. Build a small Next.js frontend shell for Netlify
 2. Move the demand-planning API routes into Next.js route handlers
 3. Read and write lean data from Firebase
 4. Keep the planning math in shared server-side modules
+
+Netlify handles static output directly. If the hosted app uses server routes or SSR later, Netlify will map that server-side code through the framework adapter during build.
 
 ## Migration steps
 
@@ -85,10 +87,24 @@ Recommended next migration:
 4. Define the lean collections above
 5. Write a one-time importer that takes the local lean tables and writes them into Firebase
 6. Create a Next.js app in the repo for hosted deployment
-7. Add Vercel project variables for Firebase config
-8. Move the current `/api/workspace`, `/api/plan`, `/api/forecast-settings`, and KPI endpoints into Next.js route handlers
-9. Deploy to Vercel
-10. Keep raw file rebuilds local or in a controlled admin import flow
+7. Add Firebase config and secrets to Netlify environment variables
+8. Add a `netlify.toml` file with the right framework build settings
+9. Move the current `/api/workspace`, `/api/plan`, `/api/forecast-settings`, and KPI endpoints into Next.js route handlers
+10. Connect the GitHub repo to Netlify for continuous deploys
+11. Use `netlify dev` locally when you want Netlify-style preview behavior
+
+## Practical Netlify commands
+
+```bash
+npm install -g netlify-cli
+netlify login
+netlify init
+netlify dev
+netlify deploy
+netlify deploy --prod
+```
+
+If you prefer Git-based deploys, you can link the GitHub repo in Netlify and let pushes trigger previews and production deploys.
 
 ## Why this is the right path
 
@@ -108,4 +124,4 @@ Short term:
 
 Next step:
 
-- create a small Next.js/Vercel wrapper and migrate the current JSON API shape into it
+- create a small Next.js/Netlify wrapper and migrate the current JSON API shape into it

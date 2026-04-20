@@ -142,6 +142,45 @@ function percent(value) {
   return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(Number(value) * 100)}%`;
 }
 
+const HEADER_HELP = {
+  "Daily velocity": "Average units sold per day from the selected baseline dates.",
+  "Order units": "Actual units sold in the selected baseline date range.",
+  "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
+  "Gross sales": "Gross product sales in the selected baseline dates.",
+  "On hand": "Units physically available right now from the latest inventory snapshot.",
+  "In transit": "Units already sent inbound but not available to sell yet.",
+  "Transit ETA": "Expected arrival date for the inbound units we are counting.",
+  "Usable supply": "Supply we can count for planning right now: on hand plus inbound expected in time.",
+  "Weeks good": "How many weeks the usable supply should last at the current daily velocity.",
+  "Safety stock": "Extra units kept as protection before the next order should arrive.",
+  "Run out date": "Projected date this product reaches zero if demand keeps moving at the current rate.",
+  "Reorder date": "The order-by date: when you should place the order so lead time and safety stock are covered.",
+  "Order now": "Recommended units to order today after supply, lead time, and safety stock are applied.",
+  "Units in baseline window": "Actual units sold during the selected baseline date range.",
+  "Baseline unit share %": "This product's share of all baseline units sold.",
+  "Baseline sales share %": "This product's share of all baseline gross sales.",
+  "Gross sales in baseline window": "Gross sales for this product during the selected baseline dates.",
+  "Planned units": "Units planned for the selected plan year after combining actual months and future forecast months.",
+  "Year share %": "This product's share of the full selected plan year units.",
+  "Year total units": "Total units for this product across the selected plan year.",
+};
+
+function renderHeaderCell(label, options = {}) {
+  const help = options.help ?? HEADER_HELP[label];
+  if (!help) {
+    return `<th>${label}</th>`;
+  }
+  return `
+    <th>
+      <span class="th-help">
+        <span>${label}</span>
+        <button type="button" class="th-help-trigger" aria-label="More info about ${label}">?</button>
+        <span class="th-help-bubble">${help}</span>
+      </span>
+    </th>
+  `;
+}
+
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message || "";
   uploadStatus.dataset.error = isError ? "true" : "false";
@@ -529,7 +568,7 @@ function renderResults(payload) {
         ["Reorder date", "reorder_date"],
         ["Order now", "recommended_order_units"],
       ];
-  resultsHead.innerHTML = `<tr>${columns.map(([label]) => `<th>${label}</th>`).join("")}</tr>`;
+  resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
   resultSummary.innerHTML = `
     <span>Urgent ${summary.urgent || 0}</span>
     <span>Watch ${summary.watch || 0}</span>
@@ -599,7 +638,9 @@ function renderMonthlyPlan(payload) {
   const columns = [["Product", "product_name"], ...months.map((month) => [month.label, month.key]), [`${year} share %`, "year_mix_pct"], [`${year} total units`, "year_total_units"]];
   const modeRow = months.map((month) => `<th class="table-mode-note">${month.mode === "actual" ? "Actual" : "Forecast"}</th>`).join("");
   monthlyPlanHead.innerHTML = `
-    <tr>${columns.map(([label]) => `<th>${label}</th>`).join("")}</tr>
+    <tr>${columns.map(([label]) => renderHeaderCell(label, {
+      help: label === "Product" ? "Core products in the selected plan year." : label.length === 3 ? `${label} units for the selected plan year.` : undefined,
+    })).join("")}</tr>
     <tr class="table-mode-row">
       <th></th>
       ${modeRow}
@@ -642,7 +683,7 @@ function renderProductMix(payload) {
     ["Estimated COGS", "estimated_cogs"],
     ["Planned units", "forecast_units"],
   ];
-  productMixHead.innerHTML = `<tr>${columns.map(([label]) => `<th>${label}</th>`).join("")}</tr>`;
+  productMixHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
   if (!rows.length) {
     productMixBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">Run planning to see product mix.</td></tr>`;
     return;
