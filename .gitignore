@@ -23,3 +23,6 @@ server8091.err.log
 _run_8091.py
 
 .vercel
+
+web/node_modules/
+web/.next/
