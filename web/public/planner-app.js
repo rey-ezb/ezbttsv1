@@ -8,6 +8,7 @@ const monthlyPlanBody = document.getElementById("monthly-plan-body");
 const productMixHead = document.getElementById("product-mix-head");
 const productMixBody = document.getElementById("product-mix-body");
 const loadSampleBtn = document.getElementById("load-sample-btn");
+const updateLiveInventoryBtn = document.getElementById("update-live-inventory-btn");
 const dataUploadForm = document.getElementById("data-upload-form");
 const planForm = document.getElementById("plan-form");
 const safetyRuleNote = document.getElementById("safety-rule-note");
@@ -2108,6 +2109,36 @@ loadSampleBtn.addEventListener("click", async () => {
     setStatus(error.message || "Could not refresh current data.", true);
   }
 });
+
+if (updateLiveInventoryBtn) {
+  updateLiveInventoryBtn.addEventListener("click", async () => {
+    try {
+      updateLiveInventoryBtn.disabled = true;
+      setStatus("Pulling the live inventory sheet and saving it to Firestore...");
+      const response = await fetch("/api/inventory-sync", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || `Request failed (${response.status})`);
+      }
+      const workspace = payload.workspace || payload;
+      inventoryUploaded = Boolean(workspace.inventoryUploaded);
+      renderSummary(workspace.summary || {}, inventoryUploaded);
+      applyDefaults(workspace.defaults || {});
+      if (payload.plan) {
+        renderResults(payload.plan);
+      } else {
+        await runPlanningFromForm(false);
+      }
+      const sync = payload.inventorySync || {};
+      const asOf = sync.snapshotDate ? ` as of ${sync.snapshotDate}` : "";
+      setStatus(`Live inventory updated${asOf}. ${integer(sync.rowsWritten || 0)} rows saved to Firestore.`);
+    } catch (error) {
+      setStatus(error.message || "Could not update live inventory from the sheet.", true);
+    } finally {
+      updateLiveInventoryBtn.disabled = false;
+    }
+  });
+}
 
 if (uploadFileInput instanceof HTMLInputElement) {
   uploadFileInput.addEventListener("change", () => setStatus(""));

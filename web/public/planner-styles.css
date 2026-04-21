@@ -188,6 +188,8 @@ h3 {
 .actions {
   margin-top: 2px;
   display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .rail-nav {

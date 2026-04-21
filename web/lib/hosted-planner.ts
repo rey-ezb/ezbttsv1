@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getFirebaseAdminDb } from "./firebase-admin";
+import { getInventorySheetSource, loadLatestInventorySnapshot } from "./inventory-sheet";
 
 type DemandDoc = {
   date: string;
@@ -352,6 +353,23 @@ async function writeDemandDocs(collectionName: string, rows: DemandDoc[]) {
     const batch = db.batch();
     rowChunk.forEach((row) => {
       const ref = db.collection(collectionName).doc(demandDocId(row));
+      batch.set(ref, row, { merge: true });
+    });
+    await batch.commit();
+  }
+}
+
+async function writeInventoryDocs(rows: InventoryDoc[]) {
+  const db = getFirebaseAdminDb();
+  for (const rowChunk of chunkArray(rows, 400)) {
+    const batch = db.batch();
+    rowChunk.forEach((row) => {
+      const slug = String(row.product_name || "unknown")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "unknown";
+      const ref = db.collection("inventorySnapshots").doc(`${row.snapshotDate}__${slug}`);
       batch.set(ref, row, { merge: true });
     });
     await batch.commit();
@@ -884,5 +902,20 @@ export async function saveHostedDemandUpload(
   return {
     uploadedDates,
     rowsWritten: normalizedRows.length,
+  };
+}
+
+export async function syncHostedInventorySnapshot() {
+  const sheetSource = getInventorySheetSource();
+  const snapshot = await loadLatestInventorySnapshot(sheetSource, "TikTok");
+  await deleteDocsByDates("inventorySnapshots", "snapshotDate", [snapshot.snapshotDate]);
+  await writeInventoryDocs(snapshot.rows);
+
+  liveStateCache = null;
+
+  return {
+    snapshotDate: snapshot.snapshotDate,
+    rowsWritten: snapshot.rows.length,
+    source: snapshot.source,
   };
 }

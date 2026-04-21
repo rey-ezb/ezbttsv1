@@ -29,3 +29,5 @@ web/start*.log
 
 web/node_modules/
 web/.next/
+
+.vercel
