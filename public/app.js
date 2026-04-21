@@ -1808,7 +1808,13 @@ async function loadWorkspace() {
 
 async function postForm(url, form) {
   const response = await fetch(url, { method: "POST", body: form });
-  const payload = await response.json();
+  const raw = await response.text();
+  let payload;
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch (error) {
+    throw new Error(raw || "Request failed");
+  }
   if (!response.ok || payload.error) throw new Error(payload.error || "Request failed");
   return payload;
 }
@@ -1856,7 +1862,6 @@ dataUploadForm.addEventListener("submit", async (event) => {
     renderSummary(payload.workspace.summary || {}, inventoryUploaded);
     applyDefaults(payload.workspace.defaults || {});
     await runPlanningFromForm(false);
-    await loadKpis();
     setStatus(`${label.charAt(0).toUpperCase() + label.slice(1)} uploaded.`);
   } catch (error) {
     setStatus(error.message || "Could not upload files.", true);

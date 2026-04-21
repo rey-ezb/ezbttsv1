@@ -45,12 +45,28 @@ def _json_scalar(value: Any) -> Any:
 
 
 def parse_inventory_csv_bytes(payload: bytes) -> pd.DataFrame:
-    raw = pd.read_csv(io.BytesIO(payload), dtype=str, keep_default_na=False)
+    buffer = io.BytesIO(payload)
+    if payload[:2] == b"PK":
+        raw = pd.read_excel(buffer, dtype=str, keep_default_na=False)
+    else:
+        try:
+            raw = pd.read_csv(buffer, dtype=str, keep_default_na=False)
+        except Exception:
+            buffer.seek(0)
+            raw = pd.read_excel(buffer, dtype=str, keep_default_na=False)
     return normalize_inventory_frame(raw)
 
 
 def parse_orders_csv_bytes(payload: bytes, *, platform: str) -> pd.DataFrame:
-    raw = pd.read_csv(io.BytesIO(payload), dtype=str, keep_default_na=False)
+    buffer = io.BytesIO(payload)
+    if payload[:2] == b"PK":
+        raw = pd.read_excel(buffer, dtype=str, keep_default_na=False)
+    else:
+        try:
+            raw = pd.read_csv(buffer, dtype=str, keep_default_na=False)
+        except Exception:
+            buffer.seek(0)
+            raw = pd.read_excel(buffer, dtype=str, keep_default_na=False)
     return normalize_orders_frame(raw, platform=platform)
 
 

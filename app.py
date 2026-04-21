@@ -667,6 +667,34 @@ def load_sample_state() -> None:
     STATE.inventory = normalize_inventory_frame(workspace["inventory_frame"])
 
 
+def _refresh_planner_state_from_orders(normalized_orders: pd.DataFrame) -> None:
+    ensure_state()
+    incoming_daily = aggregate_daily_demand(normalized_orders)
+    incoming_counts = _count_rows_by_date(normalized_orders, "order_date")
+    STATE.daily_demand = merge_daily_demand_replace_dates(STATE.daily_demand, incoming_daily)
+    STATE.order_row_counts = merge_daily_demand_replace_dates(STATE.order_row_counts, incoming_counts)
+    _save_daily_overlay(ORDERS_OVERLAY_PATH, STATE.daily_demand)
+    _save_count_overlay(ORDERS_COUNT_OVERLAY_PATH, STATE.order_row_counts)
+    inventory_template_frame = _inventory_template_from_daily(STATE.daily_demand)
+    STATE.inventory_template = _frame_records(inventory_template_frame)
+    STATE.summary["orders_loaded"] = int(STATE.order_row_counts["row_count"].sum()) if not STATE.order_row_counts.empty else 0
+    STATE.summary["products_detected"] = int(len(inventory_template_frame))
+    if not STATE.daily_demand.empty:
+        STATE.summary["date_start"] = _json_safe(STATE.daily_demand["date"].min())
+        STATE.summary["date_end"] = _json_safe(STATE.daily_demand["date"].max())
+
+
+def _refresh_planner_state_from_samples(normalized_samples: pd.DataFrame) -> None:
+    ensure_state()
+    incoming_daily = aggregate_daily_demand(normalized_samples)
+    incoming_counts = _count_rows_by_date(normalized_samples, "order_date")
+    STATE.samples_daily_demand = merge_daily_demand_replace_dates(STATE.samples_daily_demand, incoming_daily)
+    STATE.sample_row_counts = merge_daily_demand_replace_dates(STATE.sample_row_counts, incoming_counts)
+    _save_daily_overlay(SAMPLES_OVERLAY_PATH, STATE.samples_daily_demand)
+    _save_count_overlay(SAMPLES_COUNT_OVERLAY_PATH, STATE.sample_row_counts)
+    STATE.summary["samples_loaded"] = int(STATE.sample_row_counts["row_count"].sum()) if not STATE.sample_row_counts.empty else 0
+
+
 def ensure_state() -> None:
     if STATE.summary.get("orders_loaded", 0):
         return
@@ -882,7 +910,7 @@ class DemandPlanningHandler(SimpleHTTPRequestHandler):
             if not frame.empty:
                 frames.append(frame)
         if not frames:
-            self.respond_json({"error": "Upload at least one valid All orders CSV."}, status=400)
+            self.respond_json({"error": "Upload at least one valid All orders CSV or Excel file."}, status=400)
             return
         normalized_orders = pd.concat(frames, ignore_index=True)
         overlay_orders = merge_frame_replace_dates(
@@ -892,7 +920,7 @@ class DemandPlanningHandler(SimpleHTTPRequestHandler):
             sort_columns=["order_date", "order_id", "product_name"],
         )
         _save_orders_rows_overlay(ORDERS_ROWS_OVERLAY_PATH, overlay_orders)
-        load_sample_state()
+        _refresh_planner_state_from_orders(normalized_orders)
         self.respond_json({"ok": True, "workspace": workspace_payload()})
 
     def handle_inventory_upload(self) -> None:
@@ -924,21 +952,10 @@ class DemandPlanningHandler(SimpleHTTPRequestHandler):
             if not frame.empty:
                 frames.append(frame)
         if not frames:
-            self.respond_json({"error": "Upload at least one valid samples CSV."}, status=400)
+            self.respond_json({"error": "Upload at least one valid samples CSV or Excel file."}, status=400)
             return
         normalized_samples = pd.concat(frames, ignore_index=True)
-        STATE.samples_daily_demand = merge_daily_demand_replace_dates(
-            STATE.samples_daily_demand,
-            aggregate_daily_demand(normalized_samples),
-        )
-        _save_daily_overlay(SAMPLES_OVERLAY_PATH, STATE.samples_daily_demand)
-        STATE.sample_row_counts = merge_daily_demand_replace_dates(
-            STATE.sample_row_counts,
-            _count_rows_by_date(normalized_samples, "order_date"),
-        )
-        _save_count_overlay(SAMPLES_COUNT_OVERLAY_PATH, STATE.sample_row_counts)
-        STATE.samples = pd.DataFrame()
-        STATE.summary["samples_loaded"] = int(STATE.sample_row_counts["row_count"].sum()) if not STATE.sample_row_counts.empty else 0
+        _refresh_planner_state_from_samples(normalized_samples)
         self.respond_json({"ok": True, "workspace": workspace_payload()})
 
     def handle_plan(self) -> None:
