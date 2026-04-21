@@ -1,10 +1,17 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { saveHostedDemandUpload } from "@/lib/hosted-planner";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
-  return NextResponse.json(
-    { error: "Hosted uploads are not enabled yet for this deployment." },
-    { status: 501 },
-  );
+export async function POST(request: NextRequest) {
+  try {
+    const payload = await request.json();
+    const upload = await saveHostedDemandUpload("planningSamplesDaily", Array.isArray(payload?.rows) ? payload.rows : []);
+    return NextResponse.json({ ok: true, upload });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Could not upload sample rows." },
+      { status: 400 },
+    );
+  }
 }

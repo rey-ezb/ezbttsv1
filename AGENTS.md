@@ -178,6 +178,15 @@ These rules will reduce back-and-forth and token waste.
 9. Prefer batch recalculation jobs over recomputing everything on every page load.
 10. Store snapshots of planning runs so users can compare changes over time.
 
+## Approval Rules
+
+To avoid accidental remote or live changes:
+
+1. Local code edits, local previews, and local tests can be done without extra approval.
+2. Any `git commit`, `git push`, branch publish, GitHub update, Vercel project change, deployment, domain change, or other live production change requires explicit user approval first.
+3. Do not assume earlier approval still applies to later pushes or deployments unless the user clearly says that ongoing remote updates are allowed.
+4. If there is any doubt, stop after the local fix and ask before changing anything remote.
+
 ## Suggested Tech Stack
 
 Choose boring, efficient tools:

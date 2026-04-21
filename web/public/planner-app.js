@@ -152,6 +152,235 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function cleanUploadText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/\uFEFF/g, "").replace(/\u200B/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeUploadColumnName(value) {
+  return cleanUploadText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function pickUploadColumn(columns, exactCandidates, keywordGroups) {
+  const normalizedMap = new Map(columns.map((column) => [column, normalizeUploadColumnName(column)]));
+  const exact = new Set(exactCandidates.map((candidate) => normalizeUploadColumnName(candidate)));
+  for (const [column, normalized] of normalizedMap.entries()) {
+    if (exact.has(normalized)) return column;
+  }
+  for (const keywords of keywordGroups) {
+    for (const [column, normalized] of normalizedMap.entries()) {
+      if (keywords.every((keyword) => normalized.includes(keyword))) return column;
+    }
+  }
+  return null;
+}
+
+function parseUploadNumber(value) {
+  const cleaned = cleanUploadText(value)
+    .replaceAll(",", "")
+    .replaceAll("$", "")
+    .replace(/^\((.*)\)$/, "-$1");
+  if (!cleaned) return 0;
+  const numeric = Number(cleaned);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function parseUploadDate(value) {
+  const raw = cleanUploadText(value);
+  if (!raw) return null;
+  const direct = new Date(raw);
+  if (!Number.isNaN(direct.getTime())) {
+    return direct.toISOString().slice(0, 10);
+  }
+  const match = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
+  if (!match) return null;
+  let [, month, day, year, hour = "0", minute = "0", second = "0", meridiem = ""] = match;
+  let hours = Number(hour);
+  if (meridiem) {
+    const upper = meridiem.toUpperCase();
+    if (upper === "PM" && hours < 12) hours += 12;
+    if (upper === "AM" && hours === 12) hours = 0;
+  }
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), hours, Number(minute), Number(second)));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function splitCsvLine(line) {
+  const values = [];
+  let current = "";
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === "\"") {
+      if (inQuotes && next === "\"") {
+        current += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  values.push(current);
+  return values;
+}
+
+function parseCsvText(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((line) => line.trim().length);
+  if (!lines.length) return [];
+  const headers = splitCsvLine(lines[0]).map((header) => cleanUploadText(header));
+  return lines.slice(1).map((line) => {
+    const values = splitCsvLine(line);
+    return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
+  });
+}
+
+function detectPlanningComponents(productName) {
+  const name = cleanUploadText(productName).toLowerCase();
+  if (!name) return [];
+  if (name.includes("variety pack")) return [["Variety Pack", 1]];
+  const components = [];
+  const hasChileColorado = name.includes("chile colorado");
+  const hasPozoleVerde = name.includes("pozole verde");
+  const hasRegularPozole = name.includes("pozole verde and pozole")
+    || name.includes("pozole verde + pozole")
+    || (name.includes("pozole") && !name.includes("pozole verde"));
+  if (hasChileColorado) components.push("Chile Colorado Bomb 2-Pack");
+  if (hasPozoleVerde) components.push("Pozole Verde Bomb 2-Pack");
+  if (name.includes("birria")) components.push("Birria Bomb 2-Pack");
+  if (name.includes("tinga")) components.push("Tinga Bomb 2-Pack");
+  if (name.includes("brine")) components.push("Brine Bomb");
+  if (hasRegularPozole) components.push("Pozole Bomb 2-Pack");
+  const deduped = Array.from(new Set(components));
+  if (!deduped.length) return [];
+  if (name.includes("bundle")) {
+    if (deduped.length === 1) return [[deduped[0], 2]];
+    return deduped.map((component) => [component, 1]);
+  }
+  return [[deduped[0], 1]];
+}
+
+function buildPrimarySkuLookup(normalizedRows) {
+  const lookup = {};
+  normalizedRows.forEach((row) => {
+    const sellerSku = cleanUploadText(row.seller_sku_resolved);
+    const productName = cleanUploadText(row.product_name);
+    if (!sellerSku || !productName || productName.toLowerCase().includes("bundle")) return;
+    const components = detectPlanningComponents(productName);
+    if (components.length !== 1 || components[0][1] !== 1) return;
+    const [componentName] = components[0];
+    if (!lookup[componentName]) lookup[componentName] = sellerSku;
+  });
+  return lookup;
+}
+
+function normalizeUploadRows(rawRows, platform) {
+  if (!rawRows.length) return [];
+  const columns = Object.keys(rawRows[0] || {});
+  const orderIdCol = pickUploadColumn(columns, ["Order ID"], [["order", "id"]]);
+  const orderStatusCol = pickUploadColumn(columns, ["Order Status"], [["order", "status"]]);
+  const orderSubstatusCol = pickUploadColumn(columns, ["Order Substatus"], [["order", "substatus"]]);
+  const cancelTypeCol = pickUploadColumn(columns, ["Cancelation/Return Type", "Cancellation/Return Type"], [["cancel", "return", "type"]]);
+  const productNameCol = pickUploadColumn(columns, ["Product Name"], [["product", "name"]]);
+  const sellerSkuCol = pickUploadColumn(columns, ["Seller SKU"], [["seller", "sku"]]);
+  const bundleSkuCol = pickUploadColumn(columns, ["Virtual Bundle Seller SKU", " Virtual Bundle Seller SKU"], [["virtual", "bundle", "seller", "sku"]]);
+  const quantityCol = pickUploadColumn(columns, ["Quantity"], [["quantity"]]);
+  const returnedQuantityCol = pickUploadColumn(columns, ["Sku Quantity of return", "SKU Quantity of return"], [["return", "quantity"]]);
+  const grossSalesCol = pickUploadColumn(columns, ["SKU Subtotal Before Discount"], [["sku", "subtotal", "before", "discount"]]);
+  const paidTimeCol = pickUploadColumn(columns, ["Paid Time"], [["paid", "time"]]);
+  const createdTimeCol = pickUploadColumn(columns, ["Created Time"], [["created", "time"]]);
+  const cancelledTimeCol = pickUploadColumn(columns, ["Cancelled Time", "Canceled Time"], [["cancelled", "time"], ["canceled", "time"]]);
+
+  return rawRows.map((row) => {
+    const orderStatus = cleanUploadText(row[orderStatusCol]);
+    const orderSubstatus = cleanUploadText(row[orderSubstatusCol]);
+    const cancelType = cleanUploadText(row[cancelTypeCol]);
+    const productName = cleanUploadText(row[productNameCol]);
+    const quantity = parseUploadNumber(row[quantityCol]);
+    const returnedQuantity = parseUploadNumber(row[returnedQuantityCol]);
+    const grossSales = parseUploadNumber(row[grossSalesCol]);
+    const orderDate = parseUploadDate(row[paidTimeCol]) || parseUploadDate(row[createdTimeCol]);
+    const statusText = `${orderStatus} ${orderSubstatus} ${cancelType}`.toLowerCase();
+    const isCancelled = statusText.includes("cancel") || Boolean(parseUploadDate(row[cancelledTimeCol]));
+    const netUnits = isCancelled ? 0 : Math.max(quantity - returnedQuantity, 0);
+    return {
+      platform: cleanUploadText(platform) || "TikTok",
+      order_id: cleanUploadText(row[orderIdCol]),
+      order_date: orderDate,
+      product_name: productName,
+      seller_sku_resolved: cleanUploadText(row[sellerSkuCol]) || cleanUploadText(row[bundleSkuCol]),
+      quantity,
+      returned_quantity: returnedQuantity,
+      gross_sales: grossSales,
+      net_units: netUnits,
+    };
+  }).filter((row) => row.order_date && row.product_name);
+}
+
+function aggregateLeanDemandRows(normalizedRows, platform) {
+  const skuLookup = buildPrimarySkuLookup(normalizedRows);
+  const grouped = new Map();
+  normalizedRows.forEach((row) => {
+    const components = detectPlanningComponents(row.product_name);
+    const totalMultiplier = components.reduce((sum, [, multiplier]) => sum + multiplier, 0);
+    components.forEach(([componentName, multiplier]) => {
+      const key = `${row.order_date}__${componentName}`;
+      const current = grouped.get(key) || {
+        date: row.order_date,
+        platform: cleanUploadText(platform) || "TikTok",
+        product_name: componentName,
+        seller_sku_resolved: skuLookup[componentName] || "",
+        net_units: 0,
+        gross_sales: 0,
+      };
+      current.net_units += Number(row.net_units || 0) * multiplier;
+      current.gross_sales += totalMultiplier ? (Number(row.gross_sales || 0) * multiplier) / totalMultiplier : 0;
+      grouped.set(key, current);
+    });
+  });
+  return Array.from(grouped.values()).sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
+}
+
+async function readUploadFileRows(file) {
+  const lowerName = String(file.name || "").toLowerCase();
+  if (lowerName.endsWith(".xlsx")) {
+    if (!window.XLSX) {
+      throw new Error("Excel support did not load. Refresh the page and try again.");
+    }
+    const workbook = window.XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const sheetName = workbook.SheetNames.find((name) => workbook.Sheets[name]) || workbook.SheetNames[0];
+    if (!sheetName) return [];
+    return window.XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "", raw: false });
+  }
+  return parseCsvText(await file.text());
+}
+
+async function buildLeanUploadPayload(files, platform) {
+  const allNormalizedRows = [];
+  for (const file of Array.from(files)) {
+    const rawRows = await readUploadFileRows(file);
+    allNormalizedRows.push(...normalizeUploadRows(rawRows, platform));
+  }
+  const rows = aggregateLeanDemandRows(allNormalizedRows, platform);
+  const uploadedDates = Array.from(new Set(rows.map((row) => row.date))).sort();
+  return {
+    platform: cleanUploadText(platform) || "TikTok",
+    rows,
+    uploadedDates,
+    sourceRowCount: allNormalizedRows.length,
+  };
+}
+
 const HEADER_HELP = {
   "Daily velocity": "Average units sold per day from the selected baseline dates.",
   "Order units": "Actual units sold in the selected baseline date range.",
@@ -1830,10 +2059,33 @@ async function loadWorkspace() {
   }
 }
 
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const raw = await response.text();
+  let parsed = {};
+  try {
+    parsed = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(raw || `Request failed (${response.status})`);
+  }
+  if (!response.ok || parsed.error) throw new Error(parsed.error || `Request failed (${response.status})`);
+  return parsed;
+}
+
 async function postForm(url, form) {
   const response = await fetch(url, { method: "POST", body: form });
-  const payload = await response.json();
-  if (!response.ok || payload.error) throw new Error(payload.error || "Request failed");
+  const raw = await response.text();
+  let payload = {};
+  try {
+    payload = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(raw || `Request failed (${response.status})`);
+  }
+  if (!response.ok || payload.error) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
 }
 
@@ -1877,14 +2129,17 @@ dataUploadForm.addEventListener("submit", async (event) => {
     const uploadType = String(formData.get("uploadType") || "orders");
     const url = uploadType === "samples" ? "/api/upload/samples" : "/api/upload/orders";
     const label = uploadType === "samples" ? "sample files" : "order files";
-    setStatus(`Uploading ${label}...`);
-    formData.delete("uploadType");
-    const payload = await postForm(url, formData);
-    inventoryUploaded = Boolean(payload.workspace.inventoryUploaded);
-    renderSummary(payload.workspace.summary || {}, inventoryUploaded);
-    applyDefaults(payload.workspace.defaults || {});
-    await runPlanningFromForm(false);
-    setStatus(`${label.charAt(0).toUpperCase() + label.slice(1)} uploaded.`);
+    const platform = String(formData.get("platform") || "TikTok");
+    setStatus(`Reading ${label}...`);
+    const uploadPayload = await buildLeanUploadPayload(fileInput.files, platform);
+    if (!uploadPayload.rows.length) {
+      throw new Error(`Could not find any usable planning rows in the selected ${label}.`);
+    }
+    setStatus(`Uploading ${label}: ${uploadPayload.uploadedDates.length} dates, ${uploadPayload.rows.length} lean rows...`);
+    const payload = await postJson(url, uploadPayload);
+    await loadWorkspace();
+    const rowsWritten = Number(payload?.upload?.rowsWritten || uploadPayload.rows.length);
+    setStatus(`${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(rowsWritten)} lean rows across ${uploadPayload.uploadedDates.length} dates.`);
   } catch (error) {
     setStatus(error.message || "Could not upload files.", true);
   }

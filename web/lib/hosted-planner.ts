@@ -63,6 +63,15 @@ type LoadedState = {
   loadedAt: string;
 };
 
+type UploadedDemandRow = {
+  date: string;
+  platform?: string;
+  product_name: string;
+  seller_sku_resolved?: string;
+  net_units?: number;
+  gross_sales?: number;
+};
+
 const DATA_DIR = path.join(process.cwd(), "data");
 const FORECAST_DEFAULTS_FILE = path.join(DATA_DIR, "planner_forecast_defaults.json");
 const LIVE_CACHE_MS = 5 * 60 * 1000;
@@ -155,6 +164,14 @@ function uniqueSorted(values: string[]) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || "Unknown error");
 }
@@ -178,6 +195,36 @@ function normalizeMixShare(value: unknown) {
   const numeric = asNumber(value);
   if (numeric <= 0) return 0;
   return numeric > 1 ? numeric / 100 : numeric;
+}
+
+function normalizeUploadedDemandRows(rows: UploadedDemandRow[]) {
+  const grouped = new Map<string, DemandDoc>();
+  for (const row of rows) {
+    const date = String(row.date || "").slice(0, 10);
+    const productName = String(row.product_name || "").trim();
+    if (!date || !productName) continue;
+    const platform = String(row.platform || "TikTok").trim() || "TikTok";
+    const key = `${platform}__${date}__${productName}`;
+    const current = grouped.get(key) || {
+      date,
+      platform,
+      product_name: productName,
+      seller_sku_resolved: String(row.seller_sku_resolved || "").trim(),
+      net_units: 0,
+      gross_sales: 0,
+    };
+    current.net_units = asNumber(current.net_units) + asNumber(row.net_units);
+    current.gross_sales = asNumber(current.gross_sales) + asNumber(row.gross_sales);
+    if (!current.seller_sku_resolved) {
+      current.seller_sku_resolved = String(row.seller_sku_resolved || "").trim();
+    }
+    grouped.set(key, current);
+  }
+  return Array.from(grouped.values()).sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
+}
+
+function demandDocId(row: DemandDoc) {
+  return Buffer.from(`${row.platform || "TikTok"}__${row.date}__${row.product_name}`, "utf8").toString("base64url");
 }
 
 function buildLaunchPlans() {
@@ -284,6 +331,31 @@ async function loadBundledState() {
 async function readCollection<T>(name: string) {
   const snapshot = await getFirebaseAdminDb().collection(name).get();
   return snapshot.docs.map((doc) => doc.data() as T);
+}
+
+async function deleteDocsByDates(collectionName: string, fieldName: string, dates: string[]) {
+  const db = getFirebaseAdminDb();
+  for (const dateChunk of chunkArray(uniqueSorted(dates), 10)) {
+    if (!dateChunk.length) continue;
+    const snapshot = await db.collection(collectionName).where(fieldName, "in", dateChunk).get();
+    for (const docChunk of chunkArray(snapshot.docs, 400)) {
+      const batch = db.batch();
+      docChunk.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+    }
+  }
+}
+
+async function writeDemandDocs(collectionName: string, rows: DemandDoc[]) {
+  const db = getFirebaseAdminDb();
+  for (const rowChunk of chunkArray(rows, 400)) {
+    const batch = db.batch();
+    rowChunk.forEach((row) => {
+      const ref = db.collection(collectionName).doc(demandDocId(row));
+      batch.set(ref, row, { merge: true });
+    });
+    await batch.commit();
+  }
 }
 
 async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
@@ -793,4 +865,24 @@ export async function saveHostedForecastSetting(monthKeyValue: string, setting: 
       },
     ]),
   );
+}
+
+export async function saveHostedDemandUpload(
+  collectionName: "planningDemandDaily" | "planningSamplesDaily",
+  rows: UploadedDemandRow[],
+) {
+  const normalizedRows = normalizeUploadedDemandRows(rows);
+  if (!normalizedRows.length) {
+    throw new Error("No usable planning rows were found in the uploaded file.");
+  }
+
+  const uploadedDates = uniqueSorted(normalizedRows.map((row) => row.date));
+  await deleteDocsByDates(collectionName, "date", uploadedDates);
+  await writeDemandDocs(collectionName, normalizedRows);
+
+  liveStateCache = null;
+  return {
+    uploadedDates,
+    rowsWritten: normalizedRows.length,
+  };
 }
