@@ -214,6 +214,18 @@ function normalizeMixShare(value: unknown) {
   return numeric > 1 ? numeric / 100 : numeric;
 }
 
+function normalizeMixMap(mix: Record<string, unknown> | null | undefined) {
+  const entries = Object.entries(mix || {});
+  const usesPercentPoints = entries.some(([, value]) => asNumber(value) > 1);
+  return Object.fromEntries(
+    entries.map(([product, value]) => {
+      const numeric = asNumber(value);
+      if (numeric <= 0) return [product, 0];
+      return [product, usesPercentPoints ? numeric / 100 : normalizeMixShare(numeric)];
+    }),
+  );
+}
+
 function normalizeUploadedDemandRows(rows: UploadedDemandRow[]) {
   const grouped = new Map<string, DemandDoc>();
   for (const row of rows) {
@@ -802,8 +814,11 @@ export async function runHostedPlanning(params: {
 
   const { monthlyActuals, monthlyActualMix, productMonthly } = buildMonthlyActuals(state.demand);
   const latestActualMonthKey = Object.keys(monthlyActuals).sort().at(-1) || `${planningYear}-01`;
+  const latestDemandDate = state.demand.at(-1)?.date || baselineEnd;
+  const latestDemandMonthEnd = endOfMonth(toDate(latestDemandDate));
+  const latestActualMonthIsPartial = latestDemandDate < formatDate(latestDemandMonthEnd);
   const futureMix = Object.keys(forecastProductMix).length
-    ? Object.fromEntries(Object.entries(forecastProductMix).map(([product, share]) => [product, normalizeMixShare(share)]))
+    ? normalizeMixMap(forecastProductMix)
     : baselineMix;
 
   const monthRows = productNames.map((productName) => {
@@ -816,8 +831,9 @@ export async function runHostedPlanning(params: {
         const firstOfMonth = new Date(Date.UTC(planningYear, month - 1, 1));
         const days = endOfMonth(firstOfMonth).getUTCDate();
         const totalMonthUnits = (totalSalesUnits / baselineDays) * days * (1 + ((monthSettings[key]?.upliftPct ?? asNumber(workspace.defaults.forecastDefaults[key])) / 100));
-        const mixShare = Object.keys(monthSettings[key]?.productMix || {}).length
-          ? normalizeMixShare(monthSettings[key]?.productMix?.[productName])
+        const normalizedMonthMix = normalizeMixMap(monthSettings[key]?.productMix || {});
+        const mixShare = Object.keys(normalizedMonthMix).length
+          ? (normalizedMonthMix[productName] || 0)
           : (futureMix[productName] || 0);
         row[key] = totalMonthUnits * mixShare;
       }
@@ -833,13 +849,17 @@ export async function runHostedPlanning(params: {
 
   const monthlyPlan = {
     year: planningYear,
+    latestActualMonthKey,
+    latestDemandDate,
+    latestActualMonthIsPartial,
     months: Array.from({ length: 12 }, (_, index) => {
       const date = new Date(Date.UTC(planningYear, index, 1));
       const key = `${planningYear}-${String(index + 1).padStart(2, "0")}`;
+      const isLatestActualMonth = key === latestActualMonthKey;
       return {
         key,
         label: date.toLocaleString("en-US", { month: "short", timeZone: "UTC" }),
-        mode: key <= latestActualMonthKey ? "actual" : "forecast",
+        mode: key < latestActualMonthKey ? "actual" : isLatestActualMonth ? (latestActualMonthIsPartial ? "actual_mtd" : "actual") : "forecast",
       };
     }),
     rows: monthRows,

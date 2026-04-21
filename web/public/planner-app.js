@@ -93,7 +93,13 @@ let activeKpiCard = "grossProductSales";
 let activeKpiCharts = [];
 let activeForecastDialogMonth = "";
 let activeHistoryTab = "monthly";
+let kpisRequested = false;
+let activeHelpTrigger = null;
 const plannerVariant = new URLSearchParams(window.location.search).get("plannerVariant") || "current";
+const floatingHelpTooltip = document.createElement("div");
+floatingHelpTooltip.className = "app-tooltip";
+floatingHelpTooltip.hidden = true;
+document.body.appendChild(floatingHelpTooltip);
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const CORE_PRODUCTS = [
@@ -417,11 +423,53 @@ function renderHeaderCell(label, options = {}) {
     <th>
       <span class="th-help">
         <span>${escapeHtml(label)}</span>
-        <button type="button" class="th-help-trigger" title="${escapeHtml(help)}" aria-label="More info about ${escapeHtml(label)}">?</button>
-        <span class="th-help-bubble">${escapeHtml(help)}</span>
+        <button type="button" class="th-help-trigger" data-help="${escapeHtml(help)}" aria-label="More info about ${escapeHtml(label)}">?</button>
       </span>
     </th>
   `;
+}
+
+function positionFloatingHelpTooltip(trigger) {
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  const tooltipWidth = floatingHelpTooltip.offsetWidth || 320;
+  const tooltipHeight = floatingHelpTooltip.offsetHeight || 0;
+  const horizontalPadding = 12;
+  const verticalGap = 14;
+  let left = rect.left + (rect.width / 2) - (tooltipWidth / 2);
+  left = Math.max(horizontalPadding, Math.min(left, window.innerWidth - tooltipWidth - horizontalPadding));
+  let top = rect.top - tooltipHeight - verticalGap;
+  if (top < 12) {
+    top = rect.bottom + verticalGap;
+  }
+  floatingHelpTooltip.style.left = `${Math.round(left)}px`;
+  floatingHelpTooltip.style.top = `${Math.round(top)}px`;
+}
+
+function showFloatingHelpTooltip(trigger) {
+  const help = trigger?.dataset?.help;
+  if (!help) return;
+  activeHelpTrigger = trigger;
+  floatingHelpTooltip.textContent = help;
+  floatingHelpTooltip.hidden = false;
+  floatingHelpTooltip.dataset.visible = "true";
+  positionFloatingHelpTooltip(trigger);
+}
+
+function hideFloatingHelpTooltip() {
+  activeHelpTrigger = null;
+  floatingHelpTooltip.hidden = true;
+  floatingHelpTooltip.dataset.visible = "false";
+}
+
+async function syncHostedKpiAvailability() {
+  if (!hostedKpiButton || !pages.kpis) return;
+  const unavailable = true;
+  hostedKpiButton.hidden = unavailable;
+  pages.kpis.hidden = unavailable;
+  if (unavailable && activePage === "kpis") {
+    setActivePage("planning");
+  }
 }
 
 function setStatus(message, isError = false) {
@@ -430,9 +478,17 @@ function setStatus(message, isError = false) {
 }
 
 function setActivePage(page) {
+  if (page === "kpis" && hostedKpiButton?.hidden) {
+    page = "planning";
+  }
   if (page === "kpis") {
-    setStatus("TikTok KPIs are not enabled in the hosted planner yet.", true);
-    return;
+    if (!kpisRequested) {
+      kpisRequested = true;
+      setStatus("Loading TikTok KPIs...");
+      loadKpis()
+        .then(() => setStatus("TikTok KPIs loaded."))
+        .catch((error) => setStatus(error.message || "Could not load TikTok KPIs.", true));
+    }
   }
   activePage = page;
   const content = PAGE_CONTENT[page] || PAGE_CONTENT.planning;
@@ -466,6 +522,40 @@ function setActiveHistoryTab(tab) {
           : "Use a proxy launch curve and committed units to sanity-check new product sends.";
   }
 }
+
+document.addEventListener("mouseover", (event) => {
+  const trigger = event.target.closest(".th-help-trigger");
+  if (!trigger) return;
+  showFloatingHelpTooltip(trigger);
+});
+
+document.addEventListener("mouseout", (event) => {
+  const trigger = event.target.closest(".th-help-trigger");
+  if (!trigger) return;
+  const relatedTarget = event.relatedTarget;
+  if (relatedTarget instanceof Node && trigger.contains(relatedTarget)) return;
+  hideFloatingHelpTooltip();
+});
+
+document.addEventListener("focusin", (event) => {
+  const trigger = event.target.closest(".th-help-trigger");
+  if (!trigger) return;
+  showFloatingHelpTooltip(trigger);
+});
+
+document.addEventListener("focusout", (event) => {
+  const trigger = event.target.closest(".th-help-trigger");
+  if (!trigger) return;
+  hideFloatingHelpTooltip();
+});
+
+window.addEventListener("scroll", () => {
+  if (activeHelpTrigger) positionFloatingHelpTooltip(activeHelpTrigger);
+}, true);
+
+window.addEventListener("resize", () => {
+  if (activeHelpTrigger) positionFloatingHelpTooltip(activeHelpTrigger);
+});
 
 function defaultProductMix() {
   const share = 100 / CORE_PRODUCTS.length;
@@ -668,11 +758,13 @@ function renderForecastSummary() {
   if (!setting.productMix) {
     forecastSummaryList.innerHTML = `
       <span class="forecast-summary-pill">${isEditableForecastMonth(monthKey) ? `Plan ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%` : "Actual month loaded"}</span>
-        <span class="forecast-summary-pill forecast-summary-pill-muted">${isEditableForecastMonth(monthKey) ? "Using selected baseline mix" : "Using actual month mix"}</span>
+      <span class="forecast-summary-pill forecast-summary-pill-muted">${isEditableForecastMonth(monthKey) ? "Using selected baseline mix" : "Using actual month mix"}</span>
     `;
     return;
   }
-  const sortedMix = Object.entries(setting.productMix).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const sortedMix = Object.entries(setting.productMix)
+    .filter(([, value]) => Number(value) > 0)
+    .sort((a, b) => b[1] - a[1]);
   forecastSummaryList.innerHTML = [
     `<span class="forecast-summary-pill">${isEditableForecastMonth(monthKey) ? `Plan ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%` : "Actual month mix"}</span>`,
     ...sortedMix.map(([product, value]) => `<span class="forecast-summary-pill">${product.replace(" Bomb 2-Pack", "").replace(" Bomb", "")} ${number(value)}%</span>`),
@@ -902,47 +994,128 @@ function renderResults(payload) {
   renderLaunchPlanning(payload.launchPlanning || { rows: [] });
 }
 
+function buildMonthModeGroups(months) {
+  return months.reduce((groups, month) => {
+    const mode = month.mode === "actual_mtd" ? "actual_mtd" : month.mode === "actual" ? "actual" : "forecast";
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && lastGroup.mode === mode) {
+      lastGroup.count += 1;
+      lastGroup.labels.push(month.label);
+      return groups;
+    }
+    groups.push({
+      mode,
+      count: 1,
+      labels: [month.label],
+    });
+    return groups;
+  }, []);
+}
+
+function renderMonthlyPlanHeaderCell(month) {
+  const help = `${month.label} units for the selected plan year.`;
+  if (month.mode !== "forecast") {
+    return renderHeaderCell(month.label, { help });
+  }
+  const setting = getForecastSetting(month.key, { persist: false });
+  const upliftPct = Number(setting?.upliftPct || 0);
+  const baselineIndex = 100 + upliftPct;
+  return `
+    <th class="month-header-cell month-header-cell-forecast">
+      <span class="th-help">
+        <span class="month-header-stack">
+          <span class="month-header-label-row">
+            <span>${escapeHtml(month.label)}</span>
+            <button type="button" class="th-help-trigger" data-help="${escapeHtml(help)}" aria-label="More info about ${escapeHtml(month.label)}">?</button>
+          </span>
+          <span class="month-header-baseline">${number(baselineIndex)}% of baseline</span>
+          <span class="month-header-lift">${upliftPct >= 0 ? "+" : ""}${number(upliftPct)}% lift</span>
+        </span>
+      </span>
+    </th>
+  `;
+}
+
 function renderMonthlyPlan(payload) {
   const months = payload.months || [];
   const rows = payload.rows || [];
   const year = payload.year || forecastYear;
   const actualMonths = months.filter((month) => month.mode === "actual").map((month) => month.label);
+  const actualMtdMonth = months.find((month) => month.mode === "actual_mtd");
   if (monthlyPlanCopy) {
-    monthlyPlanCopy.textContent = actualMonths.length
-      ? `Shows actual monthly units for ${actualMonths.join(", ")} in ${year}. Later months use your saved month plans.`
-      : `Shows planned monthly units for ${year} using the selected baseline mix and any saved month-specific overrides.`;
+    monthlyPlanCopy.textContent = actualMtdMonth
+      ? `Shows closed actual months for ${actualMonths.join(", ")}${actualMonths.length ? ", " : ""}plus ${actualMtdMonth.label} month-to-date through ${payload.latestDemandDate}. Each cell shows units first, then that product's share of the month total. Forecast month units already include your saved uplift.`
+      : actualMonths.length
+        ? `Shows actual monthly units for ${actualMonths.join(", ")} in ${year}. Each cell shows units first, then that product's share of the month total. Later months use your saved month plans.`
+        : `Shows planned monthly units for ${year} using the selected baseline mix and any saved month-specific overrides. Each cell shows units first, then that product's share of the month total.`;
   }
   const columns = [["Product", "product_name"], ...months.map((month) => [month.label, month.key]), [`${year} share %`, "year_mix_pct"], [`${year} total units`, "year_total_units"]];
-  const modeRow = months.map((month) => `<th class="table-mode-note">${month.mode === "actual" ? "Actual" : "Forecast"}</th>`).join("");
+  const modeGroups = buildMonthModeGroups(months);
+  const modeRow = modeGroups.map((group) => `
+    <th class="table-mode-group table-mode-group-${group.mode}" colspan="${group.count}">
+      <span class="table-mode-pill">${group.mode === "actual" ? "Actual" : group.mode === "actual_mtd" ? "Actual MTD" : "Forecast"}</span>
+    </th>
+  `).join("");
+  const headerRow = columns.map(([label, key]) => {
+    if (key === "product_name") {
+      return renderHeaderCell(label, { help: "Core products in the selected plan year." });
+    }
+    const month = months.find((entry) => entry.key === key);
+    if (month) {
+      return renderMonthlyPlanHeaderCell(month);
+    }
+    return renderHeaderCell(label);
+  }).join("");
   monthlyPlanHead.innerHTML = `
-    <tr>${columns.map(([label]) => renderHeaderCell(label, {
-      help: label === "Product" ? "Core products in the selected plan year." : label.length === 3 ? `${label} units for the selected plan year.` : undefined,
-    })).join("")}</tr>
+    <tr>${headerRow}</tr>
     <tr class="table-mode-row">
-      <th></th>
+      <th class="table-mode-anchor"></th>
       ${modeRow}
-      <th></th>
-      <th></th>
+      <th class="table-mode-spacer" colspan="2"></th>
     </tr>
   `;
   if (!rows.length) {
     monthlyPlanBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">Run planning to see Jan to Dec units.</td></tr>`;
     return;
   }
+  const monthKeys = months.map((month) => month.key);
   const totals = rows.reduce((acc, row) => {
     columns.forEach(([, key]) => {
       if (key !== "product_name" && key !== "year_mix_pct") acc[key] = (acc[key] || 0) + Number(row[key] || 0);
     });
     return acc;
   }, {});
+  const monthTotals = Object.fromEntries(monthKeys.map((key) => [key, Number(totals[key] || 0)]));
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => {
     if (key === "product_name") return `<td>${row[key] || ""}</td>`;
     if (key === "year_mix_pct") return `<td>${percent(row[key])}</td>`;
+    if (monthKeys.includes(key)) {
+      const value = Number(row[key] || 0);
+      const share = monthTotals[key] > 0 ? value / monthTotals[key] : 0;
+      return `
+        <td>
+          <div class="month-value-cell">
+            <span class="month-value-number">${number(value)}</span>
+            <span class="month-value-share">${percent(share)}</span>
+          </div>
+        </td>
+      `;
+    }
     return `<td>${number(row[key])}</td>`;
   }).join("")}</tr>`).join("");
   const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => {
     if (key === "product_name") return "<td>Totals</td>";
     if (key === "year_mix_pct") return "<td>100%</td>";
+    if (monthKeys.includes(key)) {
+      return `
+        <td>
+          <div class="month-value-cell">
+            <span class="month-value-number">${number(totals[key])}</span>
+            <span class="month-value-share">100%</span>
+          </div>
+        </td>
+      `;
+    }
     return `<td>${number(totals[key])}</td>`;
   }).join("")}</tr>`;
   monthlyPlanBody.innerHTML = `${bodyRows}${totalsRow}`;
@@ -2366,7 +2539,6 @@ kpiDetailToggle?.addEventListener("toggle", () => {
 
 setActivePage("planning");
 setActiveHistoryTab("monthly");
-if (hostedKpiButton) hostedKpiButton.style.display = "none";
 if (window.localStorage.getItem(FORECAST_STORAGE_KEY) === "true") {
   document.body.classList.add("rail-collapsed");
   if (railToggle) {
@@ -2374,4 +2546,5 @@ if (window.localStorage.getItem(FORECAST_STORAGE_KEY) === "true") {
     railToggle.setAttribute("aria-expanded", "false");
   }
 }
+syncHostedKpiAvailability();
 loadWorkspace().catch((error) => setStatus(error.message || "Could not load workspace.", true));

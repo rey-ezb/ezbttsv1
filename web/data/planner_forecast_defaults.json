@@ -1,23 +1,23 @@
 {
   "months": {
     "2026-05": {
-      "upliftPct": 30.0,
+      "upliftPct": 30,
       "productMix": {
-        "Birria Bomb 2-Pack": 1.0,
-        "Chile Colorado Bomb 2-Pack": 0.0,
-        "Pozole Bomb 2-Pack": 0.0,
-        "Tinga Bomb 2-Pack": 0.0,
-        "Pozole Verde Bomb 2-Pack": 0.0,
-        "Brine Bomb": 0.0,
-        "Variety Pack": 0.0
+        "Birria Bomb 2-Pack": 63.9,
+        "Chile Colorado Bomb 2-Pack": 0,
+        "Pozole Bomb 2-Pack": 7.2,
+        "Pozole Verde Bomb 2-Pack": 26,
+        "Tinga Bomb 2-Pack": 2.2,
+        "Brine Bomb": 0.2,
+        "Variety Pack": 0.6
       }
     },
     "2026-08": {
-      "upliftPct": 40.0,
+      "upliftPct": 40,
       "productMix": {}
     },
     "2026-06": {
-      "upliftPct": 40.0,
+      "upliftPct": 40,
       "productMix": {
         "Birria Bomb 2-Pack": 0.6679999999999999,
         "Pozole Bomb 2-Pack": 0.141,
@@ -28,7 +28,7 @@
       }
     },
     "2026-11": {
-      "upliftPct": 80.0,
+      "upliftPct": 80,
       "productMix": {
         "Birria Bomb 2-Pack": 0.35,
         "Pozole Bomb 2-Pack": 0.1,
@@ -39,31 +39,31 @@
       }
     },
     "2026-09": {
-      "upliftPct": 45.0,
+      "upliftPct": 45,
       "productMix": {}
     },
     "2026-02": {
-      "upliftPct": 10.0,
+      "upliftPct": 10,
       "productMix": {}
     },
     "2026-01": {
-      "upliftPct": 10.0,
+      "upliftPct": 10,
       "productMix": {}
     },
     "2026-04": {
-      "upliftPct": 25.0,
+      "upliftPct": 25,
       "productMix": {}
     },
     "2026-10": {
-      "upliftPct": 50.0,
+      "upliftPct": 50,
       "productMix": {}
     },
     "2026-07": {
-      "upliftPct": 35.0,
+      "upliftPct": 35,
       "productMix": {}
     },
     "2026-12": {
-      "upliftPct": 60.0,
+      "upliftPct": 60,
       "productMix": {
         "Birria Bomb 2-Pack": 0.5589999999999999,
         "Pozole Bomb 2-Pack": 0.07400000000000001,
@@ -74,7 +74,7 @@
       }
     },
     "2026-03": {
-      "upliftPct": 0.0,
+      "upliftPct": 0,
       "productMix": {}
     }
   }

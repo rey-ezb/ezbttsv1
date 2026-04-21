@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/planner-styles.css?v=20260421a">
+    <link rel="stylesheet" href="/planner-styles.css?v=20260421c">
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -25,7 +25,7 @@
         </p>
         <nav class="rail-nav" aria-label="App sections">
           <button type="button" class="rail-link is-active" data-page-target="planning">Demand Planning</button>
-          <button type="button" class="rail-link" data-page-target="kpis">TikTok KPIs</button>
+          <button type="button" class="rail-link" data-page-target="kpis" hidden>TikTok KPIs</button>
         </nav>
         <div class="actions">
           <button id="load-sample-btn" class="primary">Refresh current data</button>
@@ -176,13 +176,13 @@
                 <h2>Monthly plan and baseline mix</h2>
                 <p class="panel-subcopy" id="history-section-copy">Switch between the year view and the baseline mix table without making the page longer.</p>
                 <div class="planner-compare-links">
-                  <a class="planner-compare-link" id="planner-compare-link" href="/?plannerVariant=year-jump">Compare with 1-click year view</a>
-                  <a class="planner-compare-link" id="planner-current-link" href="/">Back to current view</a>
+                  <a class="planner-compare-link" id="planner-compare-link" href="/planner.html?plannerVariant=year-jump">Compare with 1-click year view</a>
+                  <a class="planner-compare-link" id="planner-current-link" href="/planner.html">Back to current view</a>
                 </div>
               </div>
-              <div class="panel-year-tools">
-                <div class="panel-year-switcher" data-year-control="switcher" hidden>
-                  <span class="panel-year-switcher-label">Jump year</span>
+                <div class="panel-year-tools">
+                  <div class="panel-year-switcher" data-year-control="switcher" hidden>
+                  <span class="panel-year-switcher-label" aria-hidden="true"></span>
                   <div class="panel-year-switcher-buttons" id="planning-year-switcher"></div>
                 </div>
                 <div class="panel-year-control" data-year-control="input">
@@ -342,7 +342,7 @@
           </section>
         </section>
 
-        <section class="page" id="page-kpis">
+        <section class="page" id="page-kpis" hidden>
           <section class="panel panel-kpi-filters glass-sheen">
             <div class="panel-header">
               <p class="eyebrow">Core Filters</p>
@@ -456,6 +456,6 @@
     </div>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-    <script src="/planner-app.js?v=20260421b"></script>
+    <script src="/planner-app.js?v=20260421c"></script>
   </body>
 </html>
