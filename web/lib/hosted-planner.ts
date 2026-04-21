@@ -43,6 +43,18 @@ type LaunchPlanDoc = {
   listPrice?: number;
 };
 
+type UploadAuditDoc = {
+  uploadType: "orders" | "samples";
+  platform?: string;
+  rawRowCount?: number;
+  usableRowCount?: number;
+  rowsWritten?: number;
+  uploadedDates?: string[];
+  firstDate?: string | null;
+  lastDate?: string | null;
+  uploadedAt?: string;
+};
+
 type MonthSummary = {
   totalUnits: number;
   grossSales: number;
@@ -55,6 +67,10 @@ type SnapshotState = {
   inventory: InventoryDoc[];
   forecastSettings: ForecastSettingDoc[];
   launchPlans: LaunchPlanDoc[];
+  uploadAudits: {
+    orders: UploadAuditDoc | null;
+    samples: UploadAuditDoc | null;
+  };
 };
 
 type LoadedState = {
@@ -324,6 +340,10 @@ async function loadBundledState() {
     inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
     forecastSettings,
     launchPlans: buildLaunchPlans(),
+    uploadAudits: {
+      orders: null,
+      samples: null,
+    },
   };
 
   return snapshotStateCache;
@@ -332,6 +352,11 @@ async function loadBundledState() {
 async function readCollection<T>(name: string) {
   const snapshot = await getFirebaseAdminDb().collection(name).get();
   return snapshot.docs.map((doc) => doc.data() as T);
+}
+
+async function readDoc<T>(collectionName: string, docId: string) {
+  const snapshot = await getFirebaseAdminDb().collection(collectionName).doc(docId).get();
+  return snapshot.exists ? (snapshot.data() as T) : null;
 }
 
 async function deleteDocsByDates(collectionName: string, fieldName: string, dates: string[]) {
@@ -382,12 +407,14 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
     return liveStateCache.value;
   }
 
-  const [demand, samples, inventory, forecastSettings, launchPlans] = await Promise.all([
+  const [demand, samples, inventory, forecastSettings, launchPlans, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
     readCollection<DemandDoc>("planningDemandDaily"),
     readCollection<DemandDoc>("planningSamplesDaily"),
     readCollection<InventoryDoc>("inventorySnapshots"),
     readCollection<ForecastSettingDoc>("forecastSettings"),
     readCollection<LaunchPlanDoc>("launchPlans"),
+    readDoc<UploadAuditDoc>("planningUploadAudit", "orders"),
+    readDoc<UploadAuditDoc>("planningUploadAudit", "samples"),
   ]);
 
   const value: LoadedState = {
@@ -397,6 +424,10 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
       inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
       forecastSettings,
       launchPlans,
+      uploadAudits: {
+        orders: ordersUploadAudit,
+        samples: samplesUploadAudit,
+      },
     },
     source: "live",
     detail: "Live Firestore",
@@ -525,6 +556,8 @@ function buildWorkspace(stateInfo: LoadedState) {
       data_loaded_at: stateInfo.loadedAt,
       inventory_as_of: latestInventoryDate,
       inventory_rows: latestInventoryByProduct(state.inventory).size,
+      latest_order_upload: state.uploadAudits.orders,
+      latest_sample_upload: state.uploadAudits.samples,
     },
     defaults: {
       baselineStart,
@@ -888,6 +921,11 @@ export async function saveHostedForecastSetting(monthKeyValue: string, setting: 
 export async function saveHostedDemandUpload(
   collectionName: "planningDemandDaily" | "planningSamplesDaily",
   rows: UploadedDemandRow[],
+  meta: {
+    platform?: string;
+    rawRowCount?: number;
+    usableRowCount?: number;
+  } = {},
 ) {
   const normalizedRows = normalizeUploadedDemandRows(rows);
   if (!normalizedRows.length) {
@@ -897,6 +935,20 @@ export async function saveHostedDemandUpload(
   const uploadedDates = uniqueSorted(normalizedRows.map((row) => row.date));
   await deleteDocsByDates(collectionName, "date", uploadedDates);
   await writeDemandDocs(collectionName, normalizedRows);
+
+  const uploadType = collectionName === "planningSamplesDaily" ? "samples" : "orders";
+  const uploadAudit: UploadAuditDoc = {
+    uploadType,
+    platform: meta.platform || normalizedRows[0]?.platform || "TikTok",
+    rawRowCount: asNumber(meta.rawRowCount),
+    usableRowCount: asNumber(meta.usableRowCount || rows.length),
+    rowsWritten: normalizedRows.length,
+    uploadedDates,
+    firstDate: uploadedDates[0] || null,
+    lastDate: uploadedDates.at(-1) || null,
+    uploadedAt: new Date().toISOString(),
+  };
+  await getFirebaseAdminDb().collection("planningUploadAudit").doc(uploadType).set(uploadAudit, { merge: true });
 
   liveStateCache = null;
   return {

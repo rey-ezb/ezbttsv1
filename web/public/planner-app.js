@@ -368,8 +368,10 @@ async function readUploadFileRows(file) {
 
 async function buildLeanUploadPayload(files, platform) {
   const allNormalizedRows = [];
+  let rawRowCount = 0;
   for (const file of Array.from(files)) {
     const rawRows = await readUploadFileRows(file);
+    rawRowCount += rawRows.length;
     allNormalizedRows.push(...normalizeUploadRows(rawRows, platform));
   }
   const rows = aggregateLeanDemandRows(allNormalizedRows, platform);
@@ -378,6 +380,7 @@ async function buildLeanUploadPayload(files, platform) {
     platform: cleanUploadText(platform) || "TikTok",
     rows,
     uploadedDates,
+    rawRowCount,
     sourceRowCount: allNormalizedRows.length,
   };
 }
@@ -737,6 +740,28 @@ function closeForecastDialog() {
   forecastDialog.close();
 }
 
+function renderUploadAuditCard(label, audit) {
+  if (!audit?.rowsWritten) {
+    return `<div><dt>${label}</dt><dd>Not tracked yet</dd><small>Upload again to store raw and lean counts.</small></div>`;
+  }
+  const rawRows = Number(audit.rawRowCount || audit.usableRowCount || 0);
+  const usableRows = Number(audit.usableRowCount || 0);
+  const leanRows = Number(audit.rowsWritten || 0);
+  const dateCount = Array.isArray(audit.uploadedDates) ? audit.uploadedDates.length : 0;
+  const dateRange = audit.firstDate && audit.lastDate
+    ? `${audit.firstDate} to ${audit.lastDate}`
+    : dateCount
+      ? `${integer(dateCount)} dates`
+      : "Date range not tracked";
+  return `
+    <div>
+      <dt>${label}</dt>
+      <dd>${integer(rawRows)} raw</dd>
+      <small>${integer(usableRows)} usable -> ${integer(leanRows)} lean | ${dateRange}</small>
+    </div>
+  `;
+}
+
 function renderSummary(summary, hasInventory) {
   const inventoryLabel = hasInventory
     ? `Live sheet${summary.inventory_as_of ? ` (${summary.inventory_as_of})` : ""}`
@@ -748,12 +773,14 @@ function renderSummary(summary, hasInventory) {
     <dl class="summary-list">
       <div><dt>Data source</dt><dd>${sourceLabel}</dd></div>
       <div><dt>Data as of</dt><dd>${dataAsOfLabel}</dd></div>
-      <div><dt>Order rows</dt><dd>${integer(summary.orders_loaded)}</dd></div>
-      <div><dt>Sample rows</dt><dd>${integer(summary.samples_loaded || 0)}</dd></div>
+      <div><dt>Lean order rows</dt><dd>${integer(summary.orders_loaded)}</dd></div>
+      <div><dt>Lean sample rows</dt><dd>${integer(summary.samples_loaded || 0)}</dd></div>
       <div><dt>Planning products</dt><dd>${integer(summary.products_detected)}</dd></div>
       <div><dt>History start</dt><dd>${summary.date_start || "—"}</dd></div>
       <div><dt>History end</dt><dd>${summary.date_end || "—"}</dd></div>
       <div><dt>Inventory</dt><dd>${inventoryLabel}</dd></div>
+      ${renderUploadAuditCard("Latest order upload", summary.latest_order_upload)}
+      ${renderUploadAuditCard("Latest sample upload", summary.latest_sample_upload)}
     </dl>
     ${sourceDetail ? `<p class="summary-note">${sourceDetail}</p>` : ""}
   `;
@@ -2166,11 +2193,13 @@ dataUploadForm.addEventListener("submit", async (event) => {
     if (!uploadPayload.rows.length) {
       throw new Error(`Could not find any usable planning rows in the selected ${label}.`);
     }
-    setStatus(`Uploading ${label}: ${uploadPayload.uploadedDates.length} dates, ${uploadPayload.rows.length} lean rows...`);
+    setStatus(`Uploading ${label}: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable rows, ${integer(uploadPayload.rows.length)} lean rows...`);
     const payload = await postJson(url, uploadPayload);
     await loadWorkspace();
     const rowsWritten = Number(payload?.upload?.rowsWritten || uploadPayload.rows.length);
-    setStatus(`${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(rowsWritten)} lean rows across ${uploadPayload.uploadedDates.length} dates.`);
+    setStatus(
+      `${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable rows, ${integer(rowsWritten)} lean rows across ${uploadPayload.uploadedDates.length} dates.`,
+    );
   } catch (error) {
     setStatus(error.message || "Could not upload files.", true);
   }
