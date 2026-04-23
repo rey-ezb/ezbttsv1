@@ -14,10 +14,12 @@ export async function GET(request: NextRequest) {
         horizonStart: workspace.defaults.horizonStart,
         horizonEnd: workspace.defaults.horizonEnd,
         velocityMode: workspace.defaults.velocityMode,
+        excludeSpikes: workspace.defaults.excludeSpikes,
         leadTimeDays: workspace.defaults.leadTimeDays,
         upliftPct: workspace.defaults.upliftPct,
         planningYear: workspace.defaults.forecastYear,
         monthlyForecastSettings: workspace.defaults.forecastSettings,
+        customSettings: workspace.defaults.sharedSettings,
       },
       { forceRefresh: false },
     );

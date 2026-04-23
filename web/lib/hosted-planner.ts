@@ -43,6 +43,21 @@ type LaunchPlanDoc = {
   listPrice?: number;
 };
 
+type PlannerProductSettings = {
+  cogs: number;
+  moq: number;
+  casePack: number;
+  shelfLife: number;
+};
+
+type PlannerSharedSettings = {
+  global: {
+    defaultExpiryMonths: number;
+    defaultLeadTimeDays: number;
+  };
+  products: Record<string, PlannerProductSettings>;
+};
+
 type UploadAuditDoc = {
   uploadType: "orders" | "samples";
   platform?: string;
@@ -66,6 +81,7 @@ type SnapshotState = {
   samples: DemandDoc[];
   inventory: InventoryDoc[];
   forecastSettings: ForecastSettingDoc[];
+  plannerSettings: PlannerSharedSettings;
   launchPlans: LaunchPlanDoc[];
   uploadAudits: {
     orders: UploadAuditDoc | null;
@@ -91,6 +107,7 @@ type UploadedDemandRow = {
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const FORECAST_DEFAULTS_FILE = path.join(DATA_DIR, "planner_forecast_defaults.json");
+const PLANNER_SETTINGS_FILE = path.join(DATA_DIR, "planner_shared_settings.json");
 const LIVE_CACHE_MS = 5 * 60 * 1000;
 const PRODUCT_METADATA: Record<
   string,
@@ -125,6 +142,18 @@ const PRODUCT_METADATA: Record<
   "Tinga Bomb 2-Pack": { cogs: 3.15, listPrice: 19.99 },
   "Brine Bomb": { cogs: 4.2, listPrice: 19.99 },
   "Variety Pack": { cogs: 13.35, listPrice: 49.99 },
+};
+
+const CORE_PRODUCT_NAMES = Object.keys(PRODUCT_METADATA);
+
+const DEFAULT_PLANNER_PRODUCT_SETTINGS: Record<string, PlannerProductSettings> = {
+  "Birria Bomb 2-Pack": { cogs: 3.1, moq: 0, casePack: 24, shelfLife: 24 },
+  "Chile Colorado Bomb 2-Pack": { cogs: 3.95, moq: 0, casePack: 24, shelfLife: 24 },
+  "Pozole Bomb 2-Pack": { cogs: 3.05, moq: 0, casePack: 24, shelfLife: 24 },
+  "Pozole Verde Bomb 2-Pack": { cogs: 3.75, moq: 0, casePack: 24, shelfLife: 24 },
+  "Tinga Bomb 2-Pack": { cogs: 3.15, moq: 0, casePack: 24, shelfLife: 24 },
+  "Brine Bomb": { cogs: 4.2, moq: 0, casePack: 24, shelfLife: 24 },
+  "Variety Pack": { cogs: 13.35, moq: 0, casePack: 4, shelfLife: 24 },
 };
 
 let liveStateCache: { expiresAt: number; value: LoadedState } | null = null;
@@ -226,6 +255,58 @@ function normalizeMixMap(mix: Record<string, unknown> | null | undefined) {
   );
 }
 
+function buildDefaultPlannerSettings(): PlannerSharedSettings {
+  return {
+    global: {
+      defaultExpiryMonths: 24,
+      defaultLeadTimeDays: 8,
+    },
+    products: Object.fromEntries(
+      Object.entries(DEFAULT_PLANNER_PRODUCT_SETTINGS).map(([productName, setting]) => [
+        productName,
+        { ...setting },
+      ]),
+    ),
+  };
+}
+
+function normalizePlannerSharedSettings(rawSettings: unknown): PlannerSharedSettings {
+  const defaults = buildDefaultPlannerSettings();
+  const source = (rawSettings && typeof rawSettings === "object" ? rawSettings : {}) as Partial<PlannerSharedSettings>;
+  const global: Partial<PlannerSharedSettings["global"]> = source.global && typeof source.global === "object" ? source.global : {};
+  const products: Partial<Record<string, Partial<PlannerProductSettings>>> =
+    source.products && typeof source.products === "object" ? source.products : {};
+
+  return {
+    global: {
+      defaultExpiryMonths: Math.max(1, asNumber(global.defaultExpiryMonths) || defaults.global.defaultExpiryMonths),
+      defaultLeadTimeDays: Math.max(1, asNumber(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
+    },
+    products: Object.fromEntries(
+      CORE_PRODUCT_NAMES.map((productName) => {
+        const defaultsForProduct = defaults.products[productName] || {
+          cogs: asNumber(PRODUCT_METADATA[productName]?.cogs),
+          moq: 0,
+          casePack: 1,
+          shelfLife: defaults.global.defaultExpiryMonths,
+        };
+        const productSettings = (products[productName] && typeof products[productName] === "object"
+          ? products[productName]
+          : {}) as Partial<PlannerProductSettings>;
+        return [
+          productName,
+          {
+            cogs: asNumber(productSettings.cogs) || defaultsForProduct.cogs,
+            moq: Math.max(0, asNumber(productSettings.moq)),
+            casePack: Math.max(0, asNumber(productSettings.casePack) || defaultsForProduct.casePack),
+            shelfLife: Math.max(1, asNumber(productSettings.shelfLife) || defaultsForProduct.shelfLife),
+          },
+        ];
+      }),
+    ),
+  };
+}
+
 function normalizeUploadedDemandRows(rows: UploadedDemandRow[]) {
   const grouped = new Map<string, DemandDoc>();
   for (const row of rows) {
@@ -278,11 +359,12 @@ async function loadBundledState() {
     return snapshotStateCache;
   }
 
-  const [demandCsv, samplesCsv, inventoryCsv, forecastDefaultsText] = await Promise.all([
+  const [demandCsv, samplesCsv, inventoryCsv, forecastDefaultsText, plannerSettingsText] = await Promise.all([
     readFile(path.join(DATA_DIR, "planning_demand_daily.csv"), "utf8"),
     readFile(path.join(DATA_DIR, "planning_samples_daily.csv"), "utf8"),
     readFile(path.join(DATA_DIR, "planning_inventory_daily.csv"), "utf8"),
     readFile(FORECAST_DEFAULTS_FILE, "utf8"),
+    readFile(PLANNER_SETTINGS_FILE, "utf8").catch(() => JSON.stringify(buildDefaultPlannerSettings())),
   ]);
 
   const demand = parseCsv(demandCsv).map((row) => ({
@@ -345,12 +427,14 @@ async function loadBundledState() {
     upliftPct: asNumber(setting?.upliftPct),
     productMix: setting?.productMix || {},
   }));
+  const plannerSettings = normalizePlannerSharedSettings(JSON.parse(plannerSettingsText));
 
   snapshotStateCache = {
     demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
     samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
     inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
     forecastSettings,
+    plannerSettings,
     launchPlans: buildLaunchPlans(),
     uploadAudits: {
       orders: null,
@@ -419,11 +503,12 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
     return liveStateCache.value;
   }
 
-  const [demand, samples, inventory, forecastSettings, launchPlans, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
+  const [demand, samples, inventory, forecastSettings, plannerSettingsDoc, launchPlans, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
     readCollection<DemandDoc>("planningDemandDaily"),
     readCollection<DemandDoc>("planningSamplesDaily"),
     readCollection<InventoryDoc>("inventorySnapshots"),
     readCollection<ForecastSettingDoc>("forecastSettings"),
+    readDoc<PlannerSharedSettings>("planningSettings", "shared"),
     readCollection<LaunchPlanDoc>("launchPlans"),
     readDoc<UploadAuditDoc>("planningUploadAudit", "orders"),
     readDoc<UploadAuditDoc>("planningUploadAudit", "samples"),
@@ -435,6 +520,7 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
       samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
       inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
       forecastSettings,
+      plannerSettings: normalizePlannerSharedSettings(plannerSettingsDoc),
       launchPlans,
       uploadAudits: {
         orders: ordersUploadAudit,
@@ -577,12 +663,14 @@ function buildWorkspace(stateInfo: LoadedState) {
       horizonStart: formatDate(horizonStartDate),
       horizonEnd: formatDate(horizonEndDate),
       velocityMode: "sales_only",
+      excludeSpikes: true,
       upliftPct: defaults[monthKey(horizonStartDate)] ?? 30,
-      leadTimeDays: 8,
+      leadTimeDays: state.plannerSettings.global.defaultLeadTimeDays,
       safetyRule: "3 weeks in Q1 and Q2. 5 weeks in Q3 and Q4.",
       forecastYear: horizonStartDate.getUTCFullYear(),
       forecastDefaults: defaults,
       forecastSettings: settings,
+      sharedSettings: state.plannerSettings,
       monthlyActualMix,
       monthlyActuals,
     },
@@ -683,10 +771,12 @@ export async function runHostedPlanning(params: {
   horizonStart?: string;
   horizonEnd?: string;
   velocityMode?: string;
+  excludeSpikes?: boolean;
   leadTimeDays?: number;
   monthlyForecastSettings?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
   upliftPct?: number;
   planningYear?: number;
+  customSettings?: PlannerSharedSettings;
 }, options: { forceRefresh?: boolean } = {}) {
   const stateInfo = await loadState(options);
   const state = stateInfo.state;
@@ -697,7 +787,15 @@ export async function runHostedPlanning(params: {
   const horizonEnd = params.horizonEnd || workspace.defaults.horizonEnd;
   const planningYear = params.planningYear || workspace.defaults.forecastYear;
   const velocityMode = params.velocityMode || "sales_only";
-  const leadTimeDays = asNumber(params.leadTimeDays ?? workspace.defaults.leadTimeDays);
+  const excludeSpikes = params.excludeSpikes ?? workspace.defaults.excludeSpikes ?? true;
+  const sharedSettings = normalizePlannerSharedSettings(params.customSettings || state.plannerSettings);
+  const globalSettings = sharedSettings.global;
+  const getProductSetting = (
+    productName: string,
+    key: keyof PlannerProductSettings,
+    fallback: number,
+  ) => sharedSettings.products[productName]?.[key] ?? fallback;
+  const leadTimeDays = asNumber(params.leadTimeDays ?? globalSettings.defaultLeadTimeDays ?? workspace.defaults.leadTimeDays);
   const monthSettings = params.monthlyForecastSettings || workspace.defaults.forecastSettings;
   const forecastMonthKey = monthKey(horizonStart);
   const forecastSetting = monthSettings[forecastMonthKey] || { upliftPct: params.upliftPct ?? workspace.defaults.upliftPct, productMix: {} };
@@ -715,18 +813,77 @@ export async function runHostedPlanning(params: {
     ...state.launchPlans.map((row) => row.productName),
   ]);
 
-  const demandByProduct = new Map<string, { salesUnits: number; sampleUnits: number; grossSales: number; avgDailyDemand: number }>();
+  function calculateTransitStats(inventoryHistory: InventoryDoc[], productName: string) {
+    const rows = inventoryHistory
+      .filter((row) => row.product_name === productName)
+      .sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate));
+    let transitStartDate: string | null = null;
+    let currentTransitAmount = 0;
+    const completedLeadTimes: number[] = [];
+
+    for (const row of rows) {
+      const inTransit = asNumber(row.in_transit);
+      if (inTransit > 0 && currentTransitAmount === 0) {
+        transitStartDate = row.snapshotDate;
+        currentTransitAmount = inTransit;
+      } else if (inTransit === 0 && currentTransitAmount > 0) {
+        if (transitStartDate && row.snapshotDate > transitStartDate) {
+          const diffMs = toDate(row.snapshotDate).getTime() - toDate(transitStartDate).getTime();
+          completedLeadTimes.push(Math.round(diffMs / 86400000));
+        }
+        currentTransitAmount = 0;
+        transitStartDate = null;
+      } else if (inTransit > 0 && currentTransitAmount > 0) {
+        currentTransitAmount = inTransit;
+      }
+    }
+
+    return {
+      transitStartedOn: currentTransitAmount > 0 ? transitStartDate : null,
+      historicalLeadTimeDays: completedLeadTimes.length
+        ? Math.ceil(completedLeadTimes.reduce((sum, value) => sum + value, 0) / completedLeadTimes.length)
+        : null,
+    };
+  }
+
+  const demandByProduct = new Map<
+    string,
+    { salesUnits: number; sampleUnits: number; grossSales: number; avgDailyDemand: number; smoothedUnits: number; daysUsed: number }
+  >();
   for (const productName of productNames) {
     const salesRows = baselineDemandRows.filter((row) => row.product_name === productName);
     const sampleRows = baselineSampleRows.filter((row) => row.product_name === productName);
     const salesUnits = salesRows.reduce((sum, row) => sum + asNumber(row.net_units), 0);
     const sampleUnits = sampleRows.reduce((sum, row) => sum + asNumber(row.net_units), 0);
-    const unitsUsed = velocityMode === "sales_plus_samples" ? salesUnits + sampleUnits : salesUnits;
+
+    const dailySales = new Map<string, number>();
+    salesRows.forEach((row) => {
+      if (asNumber(row.net_units) > 0) {
+        dailySales.set(row.date, (dailySales.get(row.date) || 0) + asNumber(row.net_units));
+      }
+    });
+
+    const activeDaysList = Array.from(dailySales.values()).sort((a, b) => b - a);
+    let smoothedSalesUnits = salesUnits;
+    let daysToUse = baselineDays;
+
+    if (excludeSpikes && activeDaysList.length > 14) {
+      smoothedSalesUnits = salesUnits - activeDaysList[0] - activeDaysList[1];
+      daysToUse = baselineDays - 2;
+    }
+
+    if (activeDaysList.length > 0 && activeDaysList.length < daysToUse * 0.8) {
+      daysToUse = activeDaysList.length;
+    }
+
+    const unitsUsed = velocityMode === "sales_plus_samples" ? smoothedSalesUnits + sampleUnits : smoothedSalesUnits;
     demandByProduct.set(productName, {
       salesUnits,
       sampleUnits,
       grossSales: salesRows.reduce((sum, row) => sum + asNumber(row.gross_sales), 0),
-      avgDailyDemand: unitsUsed / baselineDays,
+      avgDailyDemand: daysToUse > 0 ? unitsUsed / daysToUse : 0,
+      smoothedUnits: smoothedSalesUnits,
+      daysUsed: daysToUse,
     });
   }
 
@@ -738,27 +895,68 @@ export async function runHostedPlanning(params: {
       totalSalesUnits > 0 ? demand.salesUnits / totalSalesUnits : 0,
     ]),
   );
+  const futureMix = Object.keys(forecastProductMix).length
+    ? normalizeMixMap(forecastProductMix)
+    : baselineMix;
+  const totalAvgDailyDemand = Array.from(demandByProduct.values()).reduce((sum, row) => sum + row.avgDailyDemand, 0);
+  const totalForecastDailyDemand = totalAvgDailyDemand * upliftFactor;
 
   const safetyWeeks = quarterSafetyWeeks(horizonStart);
   const horizonDays = daysInclusive(horizonStart, horizonEnd);
   const rows = productNames.map((productName) => {
-    const demand = demandByProduct.get(productName) || { salesUnits: 0, sampleUnits: 0, grossSales: 0, avgDailyDemand: 0 };
+    const demand = demandByProduct.get(productName) || {
+      salesUnits: 0,
+      sampleUnits: 0,
+      grossSales: 0,
+      avgDailyDemand: 0,
+      smoothedUnits: 0,
+      daysUsed: baselineDays,
+    };
     const inventory = latestInventory.get(productName);
-    const forecastDailyDemand = demand.avgDailyDemand * upliftFactor;
+    const transitStats = calculateTransitStats(state.inventory, productName);
+    const activeLeadTimeDays = transitStats.historicalLeadTimeDays || leadTimeDays;
+    const forecastDailyDemand = totalForecastDailyDemand * (futureMix[productName] || 0);
     const onHand = asNumber(inventory?.on_hand);
     const inTransit = asNumber(inventory?.in_transit);
     const currentSupply = onHand + inTransit;
     const safetyStockUnits = forecastDailyDemand * safetyWeeks * 7;
-    const leadTimeDemandUnits = forecastDailyDemand * leadTimeDays;
+    const leadTimeDemandUnits = forecastDailyDemand * activeLeadTimeDays;
     const reorderPointUnits = leadTimeDemandUnits + safetyStockUnits;
     const targetStockUnits = (forecastDailyDemand * horizonDays) + safetyStockUnits;
-    const recommendedOrderUnits = Math.max(0, targetStockUnits - currentSupply);
-    const projectedStockout = forecastDailyDemand > 0 ? formatDate(addDays(inventory?.snapshotDate || horizonStart, Math.floor(currentSupply / forecastDailyDemand))) : null;
-    const reorderDate = projectedStockout ? formatDate(addDays(projectedStockout, -leadTimeDays)) : null;
+    let rawRecommendedUnits = Math.max(0, targetStockUnits - currentSupply);
+    let recommendedOrderUnits = rawRecommendedUnits;
+    const moq = asNumber(getProductSetting(productName, "moq", asNumber(inventory?.moq)));
+    const casePack = asNumber(getProductSetting(productName, "casePack", asNumber(inventory?.case_pack)));
+
+    if (recommendedOrderUnits > 0) {
+      if (moq > 0 && recommendedOrderUnits < moq) recommendedOrderUnits = moq;
+      if (casePack > 0) recommendedOrderUnits = Math.ceil(recommendedOrderUnits / casePack) * casePack;
+    }
+
+    const snapshotDate = inventory?.snapshotDate || horizonStart;
+    const daysOfOnHand = forecastDailyDemand > 0 ? onHand / forecastDailyDemand : Infinity;
+    const daysOfSupply = forecastDailyDemand > 0 ? currentSupply / forecastDailyDemand : Infinity;
+    const onHandStockoutDate = daysOfOnHand !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfOnHand))) : null;
+    const projectedStockout = daysOfSupply !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfSupply))) : null;
+    let transitGapDays = 0;
+    if (inTransit > 0 && inventory?.transit_eta && onHandStockoutDate) {
+      const etaDays = daysInclusive(snapshotDate, inventory.transit_eta);
+      if (etaDays > daysOfOnHand) transitGapDays = Math.floor(etaDays - daysOfOnHand);
+    }
+    const reorderDate = projectedStockout ? formatDate(addDays(projectedStockout, -activeLeadTimeDays)) : null;
+    const shelfLifeMonths = asNumber(getProductSetting(productName, "shelfLife", globalSettings.defaultExpiryMonths || 24));
+    const maxShelfLifeDays = shelfLifeMonths * 30;
+    const projectedSupplyDays = forecastDailyDemand > 0 ? (currentSupply + recommendedOrderUnits) / forecastDailyDemand : Infinity;
 
     let status = "Healthy";
     if (forecastDailyDemand <= 0) {
       status = "No demand";
+    } else if (projectedSupplyDays > maxShelfLifeDays) {
+      status = "Spoilage Risk";
+    } else if (transitGapDays > 0) {
+      status = "Transit Gap";
+    } else if (onHand <= leadTimeDemandUnits * 0.5) {
+      status = "Critical (OH)";
     } else if (currentSupply <= leadTimeDemandUnits) {
       status = "Urgent";
     } else if (currentSupply <= reorderPointUnits) {
@@ -769,6 +967,8 @@ export async function runHostedPlanning(params: {
     return {
       product_name: productName,
       status,
+      transit_gap_days: transitGapDays,
+      on_hand_stockout_date: onHandStockoutDate,
       avg_daily_demand: demand.avgDailyDemand,
       avg_daily_gross_sales: demand.grossSales / baselineDays,
       baseline_start: baselineStart,
@@ -776,11 +976,16 @@ export async function runHostedPlanning(params: {
       sales_units_in_baseline: demand.salesUnits,
       sample_units_in_baseline: demand.sampleUnits,
       units_used_for_velocity: velocityMode === "sales_plus_samples" ? demand.salesUnits + demand.sampleUnits : demand.salesUnits,
+      smoothed_units_in_baseline: demand.smoothedUnits,
+      days_used_for_velocity: demand.daysUsed,
       mix_pct: totalSalesUnits > 0 ? demand.salesUnits / totalSalesUnits : 0,
       sales_mix_pct: totalSales > 0 ? demand.grossSales / totalSales : 0,
       gross_sales_in_baseline: demand.grossSales,
       on_hand: onHand,
       in_transit: inTransit,
+      transit_started_on: transitStats.transitStartedOn,
+      historical_lead_time_days: transitStats.historicalLeadTimeDays,
+      used_lead_time_days: activeLeadTimeDays,
       transit_eta: inventory?.transit_eta || null,
       current_supply_units: currentSupply,
       weeks_of_supply: forecastDailyDemand > 0 ? currentSupply / (forecastDailyDemand * 7) : null,
@@ -789,6 +994,7 @@ export async function runHostedPlanning(params: {
       projected_stockout_date: projectedStockout,
       reorder_date: reorderDate,
       recommended_order_units: recommendedOrderUnits,
+      raw_recommended_units: rawRecommendedUnits,
       forecast_daily_demand: forecastDailyDemand,
       forecast_units: forecastDailyDemand * horizonDays,
       lead_time_days: leadTimeDays,
@@ -799,17 +1005,25 @@ export async function runHostedPlanning(params: {
       snapshot_date: inventory?.snapshotDate || horizonStart,
       seller_sku_resolved: sellerSku,
       platform: "TikTok",
-      unit_cogs: getUnitCogs(productName, state.launchPlans),
-      estimated_cogs: demand.salesUnits * getUnitCogs(productName, state.launchPlans),
-      transit_started_on: null,
-      days_of_supply: forecastDailyDemand > 0 ? currentSupply / forecastDailyDemand : null,
-      days_on_hand: null,
+      unit_cogs: getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
+      estimated_cogs: demand.salesUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
+      capital_required: recommendedOrderUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
+      days_of_supply: daysOfSupply !== Infinity ? daysOfSupply : null,
+      days_on_hand: daysOfOnHand !== Infinity ? daysOfOnHand : null,
       horizon_start: horizonStart,
       horizon_end: horizonEnd,
     };
   }).sort((a, b) => {
-    const rank = { Urgent: 0, Watch: 1, Healthy: 2, "No demand": 3 };
-    return (rank[a.status as keyof typeof rank] - rank[b.status as keyof typeof rank]) || (b.recommended_order_units - a.recommended_order_units);
+    const rank: Record<string, number> = {
+      "Critical (OH)": 0,
+      Urgent: 1,
+      "Transit Gap": 2,
+      Watch: 3,
+      Healthy: 4,
+      "Spoilage Risk": 5,
+      "No demand": 6,
+    };
+    return ((rank[a.status] ?? 99) - (rank[b.status] ?? 99)) || (b.recommended_order_units - a.recommended_order_units);
   });
 
   const { monthlyActuals, monthlyActualMix, productMonthly } = buildMonthlyActuals(state.demand);
@@ -817,10 +1031,6 @@ export async function runHostedPlanning(params: {
   const latestDemandDate = state.demand.at(-1)?.date || baselineEnd;
   const latestDemandMonthEnd = endOfMonth(toDate(latestDemandDate));
   const latestActualMonthIsPartial = latestDemandDate < formatDate(latestDemandMonthEnd);
-  const futureMix = Object.keys(forecastProductMix).length
-    ? normalizeMixMap(forecastProductMix)
-    : baselineMix;
-
   const monthRows = productNames.map((productName) => {
     const row: Record<string, number | string> = { product_name: productName, year_total_units: 0, year_mix_pct: 0 };
     for (let month = 1; month <= 12; month += 1) {
@@ -883,11 +1093,15 @@ export async function runHostedPlanning(params: {
     rows,
     summary: {
       rows: rows.length,
+      critical_on_hand: rows.filter((row) => row.status === "Critical (OH)").length,
       urgent: rows.filter((row) => row.status === "Urgent").length,
+      transit_gap: rows.filter((row) => row.status === "Transit Gap").length,
       watch: rows.filter((row) => row.status === "Watch").length,
       healthy: rows.filter((row) => row.status === "Healthy").length,
+      spoilage_risk: rows.filter((row) => row.status === "Spoilage Risk").length,
       no_demand: rows.filter((row) => row.status === "No demand").length,
       covered: rows.filter((row) => row.status === "Healthy").length,
+      exceptions: rows.filter((row) => ["Critical (OH)", "Urgent", "Transit Gap", "Watch", "Spoilage Risk"].includes(row.status)).length,
     },
     monthlyPlan,
     productMix,
@@ -936,6 +1150,22 @@ export async function saveHostedForecastSetting(monthKeyValue: string, setting: 
       },
     ]),
   );
+}
+
+export async function saveHostedPlannerSettings(settings: unknown) {
+  const payload = normalizePlannerSharedSettings(settings);
+
+  await getFirebaseAdminDb().collection("planningSettings").doc("shared").set(payload, { merge: true });
+  liveStateCache = null;
+
+  try {
+    await writeFile(PLANNER_SETTINGS_FILE, JSON.stringify(payload, null, 2), "utf8");
+    snapshotStateCache = null;
+  } catch {
+    // Ignore local snapshot write failures in hosted/serverless environments.
+  }
+
+  return payload;
 }
 
 export async function saveHostedDemandUpload(

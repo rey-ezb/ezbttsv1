@@ -1,0 +1,50 @@
+{
+  "global": {
+    "defaultExpiryMonths": 24,
+    "defaultLeadTimeDays": 8
+  },
+  "products": {
+    "Birria Bomb 2-Pack": {
+      "cogs": 3.1,
+      "moq": 0,
+      "casePack": 24,
+      "shelfLife": 24
+    },
+    "Chile Colorado Bomb 2-Pack": {
+      "cogs": 3.95,
+      "moq": 0,
+      "casePack": 24,
+      "shelfLife": 24
+    },
+    "Pozole Bomb 2-Pack": {
+      "cogs": 3.05,
+      "moq": 0,
+      "casePack": 24,
+      "shelfLife": 24
+    },
+    "Pozole Verde Bomb 2-Pack": {
+      "cogs": 3.75,
+      "moq": 0,
+      "casePack": 24,
+      "shelfLife": 24
+    },
+    "Tinga Bomb 2-Pack": {
+      "cogs": 3.15,
+      "moq": 0,
+      "casePack": 24,
+      "shelfLife": 24
+    },
+    "Brine Bomb": {
+      "cogs": 4.2,
+      "moq": 0,
+      "casePack": 24,
+      "shelfLife": 24
+    },
+    "Variety Pack": {
+      "cogs": 13.35,
+      "moq": 0,
+      "casePack": 4,
+      "shelfLife": 24
+    }
+  }
+}

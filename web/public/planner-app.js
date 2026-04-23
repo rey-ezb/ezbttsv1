@@ -18,6 +18,7 @@ const railButtons = Array.from(document.querySelectorAll("[data-page-target]"));
 const pages = {
   planning: document.getElementById("page-planning"),
   kpis: document.getElementById("page-kpis"),
+  settings: document.getElementById("page-settings"),
 };
 const hostedKpiButton = railButtons.find((button) => button.dataset.pageTarget === "kpis");
 const railChip = document.getElementById("rail-chip");
@@ -79,11 +80,15 @@ const launchReferenceHead = document.getElementById("launch-reference-head");
 const launchReferenceBody = document.getElementById("launch-reference-body");
 const launchScenariosHead = document.getElementById("launch-scenarios-head");
 const launchScenariosBody = document.getElementById("launch-scenarios-body");
+const globalSettingsForm = document.getElementById("global-settings-form");
+const productSettingsBody = document.getElementById("product-settings-body");
+const saveSettingsButton = document.getElementById("btn-save-settings");
 
 let inventoryUploaded = false;
 let forecastSettings = {};
 let monthlyActualMix = {};
 let monthlyActuals = {};
+let sharedPlannerSettings = null;
 let forecastYear = new Date().getFullYear();
 let activePage = "planning";
 let activeKpiTab = "orders";
@@ -122,6 +127,11 @@ const PAGE_CONTENT = {
     chip: "TikTok KPIs",
     title: "Lean TikTok KPI surface.",
     lead: "This dashboard rebuilds just the order metrics you actually use: sales, AOV, customer counts, and location data.",
+  },
+  settings: {
+    chip: "Global Settings",
+    title: "Configuration and Math Overrides.",
+    lead: "Shared planner settings for COGS, MOQ, case packs, shelf life, and default lead time.",
   },
 };
 
@@ -355,7 +365,9 @@ function aggregateLeanDemandRows(normalizedRows, platform) {
       grouped.set(key, current);
     });
   });
-  return Array.from(grouped.values()).sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
+  return Array.from(grouped.values())
+    .filter((row) => row.net_units !== 0 || row.gross_sales !== 0)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
 }
 
 async function readUploadFileRows(file) {
@@ -392,19 +404,25 @@ async function buildLeanUploadPayload(files, platform) {
 }
 
 const HEADER_HELP = {
+  "Status": "Planner status summary. Spoilage Risk is currently estimated as: projected_supply_days = (on_hand + in_transit + recommended_order_units) / forecast_daily_demand. The row is marked Spoilage Risk when projected_supply_days is greater than shelf_life_months * 30. This is not batch-aware, so it does not distinguish older warehouse stock from newer fresh inventory.",
   "Daily velocity": "Average units sold per day from the selected baseline dates.",
   "Order units": "Actual units sold in the selected baseline date range.",
+  "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on and there are more than 14 selling days, the planner removes the top 2 highest sales days before calculating demand velocity.",
   "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
   "Gross sales": "Gross product sales in the selected baseline dates.",
   "On hand": "Units physically available right now from the latest inventory snapshot.",
   "In transit": "Units already sent inbound but not available to sell yet.",
+  "Transit start": "First snapshot date where the current inbound shipment appears as in transit.",
   "Transit ETA": "Expected arrival date for the inbound units we are counting.",
+  "Lead time used": "Lead time used in the math for this row. The planner uses historical transit lead time when it can infer one, otherwise it falls back to the shared default lead time.",
+  "Transit gap": "Estimated number of days where on-hand inventory runs out before the current inbound ETA arrives.",
   "Usable supply": "Supply we can count for planning right now: on hand plus inbound expected in time.",
   "Weeks good": "How many weeks the usable supply should last at the current daily velocity.",
   "Safety stock": "Extra units kept as protection before the next order should arrive.",
   "Projected stockout date": "Projected stockout date if demand keeps moving at the current rate.",
   "Order-by date": "Latest date to place the order so lead time and safety stock are covered.",
   "Order today": "Recommended units to order today after supply, lead time, and safety stock are applied.",
+  "Capital needed": "Estimated cash needed for the recommended order: recommended_order_units * unit_cogs.",
   "Units in baseline window": "Actual units sold during the selected baseline date range.",
   "Baseline unit share %": "This product's share of all baseline units sold.",
   "Baseline sales share %": "This product's share of all baseline gross sales.",
@@ -500,6 +518,7 @@ function setActivePage(page) {
     button.classList.toggle("is-active", selected);
   });
   Object.entries(pages).forEach(([key, node]) => {
+    if (!node) return;
     node.classList.toggle("page-active", key === page);
   });
 }
@@ -560,6 +579,88 @@ window.addEventListener("resize", () => {
 function defaultProductMix() {
   const share = 100 / CORE_PRODUCTS.length;
   return Object.fromEntries(CORE_PRODUCTS.map((product) => [product, share]));
+}
+
+function defaultPlannerSettings() {
+  return {
+    global: {
+      defaultExpiryMonths: 24,
+      defaultLeadTimeDays: 8,
+    },
+    products: {
+      "Birria Bomb 2-Pack": { cogs: 3.1, moq: 0, casePack: 24, shelfLife: 24 },
+      "Chile Colorado Bomb 2-Pack": { cogs: 3.95, moq: 0, casePack: 24, shelfLife: 24 },
+      "Pozole Bomb 2-Pack": { cogs: 3.05, moq: 0, casePack: 24, shelfLife: 24 },
+      "Pozole Verde Bomb 2-Pack": { cogs: 3.75, moq: 0, casePack: 24, shelfLife: 24 },
+      "Tinga Bomb 2-Pack": { cogs: 3.15, moq: 0, casePack: 24, shelfLife: 24 },
+      "Brine Bomb": { cogs: 4.2, moq: 0, casePack: 24, shelfLife: 24 },
+      "Variety Pack": { cogs: 13.35, moq: 0, casePack: 4, shelfLife: 24 },
+    },
+  };
+}
+
+function normalizePlannerSettings(settings) {
+  const defaults = defaultPlannerSettings();
+  const source = settings && typeof settings === "object" ? settings : {};
+  const global = source.global && typeof source.global === "object" ? source.global : {};
+  const products = source.products && typeof source.products === "object" ? source.products : {};
+  return {
+    global: {
+      defaultExpiryMonths: Math.max(1, Number(global.defaultExpiryMonths) || defaults.global.defaultExpiryMonths),
+      defaultLeadTimeDays: Math.max(1, Number(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
+    },
+    products: Object.fromEntries(CORE_PRODUCTS.map((product) => {
+      const sourceProduct = products[product] && typeof products[product] === "object" ? products[product] : {};
+      const defaultProduct = defaults.products[product] || { cogs: 0, moq: 0, casePack: 1, shelfLife: defaults.global.defaultExpiryMonths };
+      return [
+        product,
+        {
+          cogs: Number(sourceProduct.cogs) || defaultProduct.cogs,
+          moq: Math.max(0, Number(sourceProduct.moq) || 0),
+          casePack: Math.max(1, Number(sourceProduct.casePack) || defaultProduct.casePack),
+          shelfLife: Math.max(1, Number(sourceProduct.shelfLife) || defaultProduct.shelfLife),
+        },
+      ];
+    })),
+  };
+}
+
+function renderPlannerSettings(settings) {
+  if (!globalSettingsForm || !productSettingsBody) return;
+  const normalized = normalizePlannerSettings(settings);
+  globalSettingsForm.elements["defaultExpiryMonths"].value = String(normalized.global.defaultExpiryMonths);
+  globalSettingsForm.elements["defaultLeadTimeDays"].value = String(normalized.global.defaultLeadTimeDays);
+  productSettingsBody.innerHTML = CORE_PRODUCTS.map((product) => {
+    const productSettings = normalized.products[product];
+    return `
+      <tr>
+        <td class="text-left">${product}</td>
+        <td><input type="number" step="0.01" data-setting-product="${product}" data-setting-key="cogs" value="${productSettings.cogs}"></td>
+        <td><input type="number" step="1" data-setting-product="${product}" data-setting-key="moq" value="${productSettings.moq}"></td>
+        <td><input type="number" step="1" data-setting-product="${product}" data-setting-key="casePack" value="${productSettings.casePack}"></td>
+        <td><input type="number" step="1" data-setting-product="${product}" data-setting-key="shelfLife" value="${productSettings.shelfLife}"></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function readPlannerSettingsForm() {
+  const defaults = defaultPlannerSettings();
+  const settings = {
+    global: {
+      defaultExpiryMonths: Math.max(1, Number(globalSettingsForm?.elements?.defaultExpiryMonths?.value) || defaults.global.defaultExpiryMonths),
+      defaultLeadTimeDays: Math.max(1, Number(globalSettingsForm?.elements?.defaultLeadTimeDays?.value) || defaults.global.defaultLeadTimeDays),
+    },
+    products: {},
+  };
+  Array.from(productSettingsBody?.querySelectorAll("input[data-setting-product]") || []).forEach((input) => {
+    const product = String(input.dataset.settingProduct || "");
+    const key = String(input.dataset.settingKey || "");
+    if (!product || !key) return;
+    if (!settings.products[product]) settings.products[product] = { ...defaults.products[product] };
+    settings.products[product][key] = Number(input.value || 0);
+  });
+  return normalizePlannerSettings(settings);
 }
 
 function normalizeProductMix(rawMix = {}, fallbackMix = null) {
@@ -882,6 +983,7 @@ function applyDefaults(defaults) {
   forecastSettings = normalizeForecastSettings(defaults || {});
   monthlyActualMix = defaults.monthlyActualMix || {};
   monthlyActuals = defaults.monthlyActuals || {};
+  sharedPlannerSettings = normalizePlannerSettings(defaults.sharedSettings || sharedPlannerSettings || defaultPlannerSettings());
   forecastYear = defaults.forecastYear || forecastYear;
   if (planningYearInput) planningYearInput.value = String(forecastYear);
   document.getElementById("baseline-start").value = defaults.baselineStart || "";
@@ -890,8 +992,11 @@ function applyDefaults(defaults) {
   document.getElementById("horizon-end").value = defaults.horizonEnd || "";
   document.getElementById("uplift-pct").value = defaults.upliftPct ?? 0;
   document.getElementById("lead-time-days").value = defaults.leadTimeDays ?? 8;
+  const excludeSpikesInput = document.getElementById("exclude-spikes");
+  if (excludeSpikesInput) excludeSpikesInput.checked = defaults.excludeSpikes ?? true;
   document.getElementById("velocity-mode").value = defaults.velocityMode || "sales_only";
   safetyRuleNote.textContent = `Planning period = the future dates you want to cover. Safety stock: ${defaults.safetyRule || ""}`;
+  renderPlannerSettings(sharedPlannerSettings);
   renderForecastSummary();
 }
 
@@ -906,42 +1011,56 @@ function renderResults(payload) {
         ["Status", "status"],
         ["Daily velocity", "avg_daily_demand"],
         ["Order units", "sales_units_in_baseline"],
+        ["Smoothed units", "smoothed_units_in_baseline"],
           ["Baseline unit mix %", "mix_pct"],
         ["Gross sales", "gross_sales_in_baseline"],
         ["On hand", "on_hand"],
         ["In transit", "in_transit"],
+        ["Transit start", "transit_started_on"],
         ["Transit ETA", "transit_eta"],
+        ["Lead time used", "used_lead_time_days"],
+        ["Transit gap", "transit_gap_days"],
         ["Usable supply", "current_supply_units"],
         ["Weeks good", "weeks_of_supply"],
         ["Safety stock", "safety_stock_units"],
         ["Projected stockout date", "projected_stockout_date"],
         ["Order-by date", "reorder_date"],
         ["Order today", "recommended_order_units"],
+        ["Capital needed", "capital_required"],
       ]
     : [
         ["Product", "product_name"],
         ["Status", "status"],
         ["Daily velocity", "avg_daily_demand"],
         ["Order units", "sales_units_in_baseline"],
+        ["Smoothed units", "smoothed_units_in_baseline"],
           ["Baseline unit mix %", "mix_pct"],
         ["Samples", "sample_units_in_baseline"],
         ["Units used", "units_used_for_velocity"],
+        ["Days used", "days_used_for_velocity"],
         ["Gross sales", "gross_sales_in_baseline"],
         ["On hand", "on_hand"],
         ["In transit", "in_transit"],
+        ["Transit start", "transit_started_on"],
         ["Transit ETA", "transit_eta"],
+        ["Lead time used", "used_lead_time_days"],
+        ["Transit gap", "transit_gap_days"],
         ["Usable supply", "current_supply_units"],
         ["Weeks good", "weeks_of_supply"],
         ["Safety stock", "safety_stock_units"],
         ["Projected stockout date", "projected_stockout_date"],
         ["Order-by date", "reorder_date"],
         ["Order today", "recommended_order_units"],
+        ["Capital needed", "capital_required"],
       ];
   resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
   resultSummary.innerHTML = `
+    <span>Critical ${summary.critical_on_hand || 0}</span>
     <span>Urgent ${summary.urgent || 0}</span>
+    <span>Transit gap ${summary.transit_gap || 0}</span>
     <span>Watch ${summary.watch || 0}</span>
     <span>Healthy ${summary.healthy || 0}</span>
+    <span>Spoilage ${summary.spoilage_risk || 0}</span>
     ${inventoryUploaded ? "" : "<span>No inventory uploaded yet</span>"}
   `;
   if (!rows.length) {
@@ -963,27 +1082,29 @@ function renderResults(payload) {
       "current_supply_units",
       "safety_stock_units",
       "recommended_order_units",
+      "capital_required",
     ].forEach((key) => {
       acc[key] = (acc[key] || 0) + Number(row[key] || 0);
     });
     return acc;
   }, {});
   const renderCell = (key, row) => {
-    if (key === "status") return `<span class="status status-${String(row.status || "").toLowerCase().replace(/\s+/g, "-")}">${row.status || ""}</span>`;
-    if (key === "gross_sales_in_baseline") return money(row[key]);
+    if (key === "status") return `<span class="status status-${String(row.status || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}">${row.status || ""}</span>`;
+    if (key === "gross_sales_in_baseline" || key === "capital_required") return money(row[key]);
     if (key === "mix_pct") return percent(row[key]);
     if (key === "safety_stock_units") return `${number(row[key])} (${number(row.safety_stock_weeks)} wks)`;
-    if (["product_name", "projected_stockout_date", "reorder_date", "transit_eta"].includes(key)) return row[key] || "";
+    if (["product_name", "projected_stockout_date", "reorder_date", "transit_eta", "transit_started_on"].includes(key)) return row[key] || "";
     return number(row[key]);
   };
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => `<td>${renderCell(key, row)}</td>`).join("")}</tr>`).join("");
   const totalCell = (key) => {
     if (key === "product_name") return "Totals";
     if (key === "mix_pct") return "100%";
-    if (key === "gross_sales_in_baseline") return money(totals[key] || 0);
-    if (["sales_units_in_baseline", "sample_units_in_baseline", "units_used_for_velocity", "on_hand", "in_transit", "current_supply_units", "recommended_order_units"].includes(key)) {
+    if (key === "gross_sales_in_baseline" || key === "capital_required") return money(totals[key] || 0);
+    if (["sales_units_in_baseline", "smoothed_units_in_baseline", "sample_units_in_baseline", "units_used_for_velocity", "days_used_for_velocity", "on_hand", "in_transit", "current_supply_units", "recommended_order_units"].includes(key)) {
       return number(totals[key] || 0);
     }
+    if (key === "transit_gap_days") return "";
     return "";
   };
   const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => `<td>${totalCell(key)}</td>`).join("")}</tr>`;
@@ -2179,16 +2300,19 @@ function renderKpis(payload) {
 async function runPlanningFromForm(showStatus = true) {
   const formData = new FormData(planForm);
   const payload = Object.fromEntries(formData.entries());
+  const excludeSpikesInput = document.getElementById("exclude-spikes");
   const monthKey = getSelectedPlanningMonthKey();
   const activeSetting = getForecastSetting(monthKey, { persist: false });
   payload.planningYear = Number(planningYearInput?.value || forecastYear || new Date().getFullYear());
   payload.upliftPct = activeSetting.upliftPct;
+  payload.excludeSpikes = excludeSpikesInput?.checked ?? true;
   payload.monthlyForecastSettings = Object.fromEntries(
     Object.entries(forecastSettings).filter(([, setting]) => setting && typeof setting === "object"),
   );
   payload.monthlyForecastPcts = Object.fromEntries(
     Object.entries(payload.monthlyForecastSettings).map(([key, setting]) => [key, Number(setting?.upliftPct || 0)]),
   );
+  payload.customSettings = sharedPlannerSettings || defaultPlannerSettings();
   const response = await fetch("/api/plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2513,6 +2637,29 @@ saveForecastSettingsButton.addEventListener("click", async () => {
     setStatus("Month forecast saved.");
   } catch (error) {
     setStatus(error.message || "Could not save month settings.", true);
+  }
+});
+
+saveSettingsButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  try {
+    const nextSettings = readPlannerSettingsForm();
+    const response = await fetch("/api/planner-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: nextSettings }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) {
+      throw new Error(payload.error || "Could not save planner settings.");
+    }
+    sharedPlannerSettings = normalizePlannerSettings(payload.plannerSettings || nextSettings);
+    renderPlannerSettings(sharedPlannerSettings);
+    document.getElementById("lead-time-days").value = String(sharedPlannerSettings.global.defaultLeadTimeDays || 8);
+    await runPlanningFromForm(false);
+    setStatus("Shared planner settings saved.");
+  } catch (error) {
+    setStatus(error.message || "Could not save planner settings.", true);
   }
 });
 

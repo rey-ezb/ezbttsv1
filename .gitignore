@@ -1,4 +1,6 @@
 Data/
+!web/data/
+!web/data/planner_shared_settings.json
 workspace_state/
 materialized/
 __pycache__/

@@ -26,6 +26,7 @@
         <nav class="rail-nav" aria-label="App sections">
           <button type="button" class="rail-link is-active" data-page-target="planning">Demand Planning</button>
           <button type="button" class="rail-link" data-page-target="kpis" hidden>TikTok KPIs</button>
+          <button type="button" class="rail-link" data-page-target="settings">Settings</button>
         </nav>
         <div class="actions">
           <button id="load-sample-btn" class="primary">Refresh current data</button>
@@ -89,6 +90,11 @@
                     </select>
                   </label>
                   <label>Reorder lead time (days)<input type="number" id="lead-time-days" name="leadTimeDays" value="8"></label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="exclude-spikes" name="excludeSpikes" checked>
+                    <span>Viral outlier smoothing</span>
+                    <span class="tooltip-trigger" title="Exclude the top 2 highest sales days when history is rich enough so viral spikes do not inflate reorder recommendations.">?</span>
+                  </label>
                   <div class="forecast-inline-block">
                     <span class="forecast-inline-label">Selected month plan</span>
                     <div class="forecast-inline-copy" id="forecast-summary-copy"></div>
@@ -132,12 +138,12 @@
                 <label>Month
                   <select id="forecast-month-picker"></select>
                 </label>
-                <label>Planned change vs prior month %
+                <label>Target uplift vs baseline (%)
                   <input type="number" id="forecast-month-uplift" step="0.1">
                 </label>
               </div>
               <div class="forecast-dialog-copy">
-                Set the month-level change, then choose the product share for that month. If you do not save a custom split, the planner falls back to the selected baseline mix. Product share should add up to 100%.
+                Set the expected demand growth compared to your selected baseline period, then choose the product share for that month. If you do not save a custom split, the planner falls back to the selected baseline mix. Product share should add up to 100%.
               </div>
               <div class="forecast-product-mix-inputs" id="forecast-product-mix-inputs"></div>
               <div class="forecast-total-row">
@@ -450,6 +456,53 @@
               </div>
             </div>
             <div id="kpi-workspace-content" class="kpi-workspace-content"></div>
+          </section>
+        </section>
+
+        <section class="page" id="page-settings">
+          <section class="panel panel-results-primary glass-sheen">
+            <div class="panel-header">
+              <p class="eyebrow">Configuration</p>
+              <h2>Global Settings</h2>
+            </div>
+            <form id="global-settings-form" class="kpi-filter-form planner-settings-form">
+              <div class="kpi-filter-grid">
+                <label>Default Expiry / Shelf Life (Months)
+                  <input type="number" id="setting-default-expiry" name="defaultExpiryMonths" value="24" min="1" max="120">
+                </label>
+                <label>Global Default Lead Time (Days)
+                  <input type="number" id="setting-default-lead" name="defaultLeadTimeDays" value="8" min="1" max="180">
+                </label>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel panel-results-primary glass-sheen mt-4">
+            <div class="panel-header">
+              <p class="eyebrow">Shared Product Data</p>
+              <h2>Planner Product Master</h2>
+            </div>
+            <div class="table-wrap">
+              <form id="product-settings-form">
+                <table id="product-settings-table">
+                  <thead>
+                    <tr>
+                      <th class="text-left">Product Name</th>
+                      <th title="Unit cost of goods sold">COGS ($)</th>
+                      <th title="Minimum order quantity">MOQ (Units)</th>
+                      <th title="Units per case pack">Case Pack</th>
+                      <th title="Maximum months before spoilage risk">Shelf Life (Months)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="product-settings-body">
+                    <tr><td colspan="5" class="empty">Loading shared planner settings.</td></tr>
+                  </tbody>
+                </table>
+              </form>
+            </div>
+            <div class="actions planner-settings-actions">
+              <button class="primary" id="btn-save-settings">Save Shared Settings</button>
+            </div>
           </section>
         </section>
       </main>
