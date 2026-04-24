@@ -394,6 +394,7 @@ function pctLabel(value) {
 function normalizeSkuMappingRow(raw) {
   const row = raw && typeof raw === "object" ? raw : {};
   const skuTypeRaw = String(row.skuType || row.sku_type || "").trim().toLowerCase();
+  const source = String(row.source || "").trim().toLowerCase();
   return {
     skuId: String(row.skuId || row["SKU ID"] || "").trim(),
     productName: String(row.productName || row["Product Name"] || "").trim(),
@@ -401,7 +402,7 @@ function normalizeSkuMappingRow(raw) {
     product2: String(row.product2 || row["Product 2"] || "").trim(),
     product3: String(row.product3 || row["Product 3"] || "").trim(),
     product4: String(row.product4 || row["Product 4"] || "").trim(),
-    source: row.source === "local" ? "local" : "base",
+    source: source === "local" || source === "override" ? "override" : "base",
     skuType: skuTypeRaw === "bundle" || skuTypeRaw === "virtual_bundle" ? "bundle" : skuTypeRaw === "base" || skuTypeRaw === "core" ? "base" : "",
   };
 }
@@ -453,8 +454,8 @@ function renderSkuMappingTable(rows) {
   }
   skuMappingBody.innerHTML = rows.map((row) => {
     const normalized = normalizeSkuMappingRow(row);
-    const sourceLabel = normalized.source === "local" ? "LOCAL" : "BASE";
-    const sourceClass = normalized.source === "local" ? "status-covered" : "status-no-demand";
+    const sourceLabel = normalized.source === "override" ? "OVERRIDE" : "BASE";
+    const sourceClass = normalized.source === "override" ? "status-covered" : "status-no-demand";
     const skuType = normalizeSkuTypeForSelect(normalized.skuType, normalized);
     return `
       <tr data-sku-mapping-row="true" data-sku-mapping-source="${normalized.source}" data-sku-mapping-key="${escapeHtml(skuMappingKey(normalized))}">
@@ -531,7 +532,7 @@ async function loadSkuMapping() {
     const payload = await fetchJson("/api/sku-mapping");
     skuMappingSnapshot = {
       baseRows: Array.isArray(payload.baseRows) ? payload.baseRows.map(normalizeSkuMappingRow) : [],
-      localRows: Array.isArray(payload.localRows) ? payload.localRows.map((row) => ({ ...normalizeSkuMappingRow(row), source: "local" })) : [],
+      localRows: Array.isArray(payload.localRows) ? payload.localRows.map((row) => ({ ...normalizeSkuMappingRow(row), source: "override" })) : [],
       rows: Array.isArray(payload.rows) ? payload.rows.map(normalizeSkuMappingRow) : [],
       editable: Boolean(payload.editable),
       mode: payload.mode === "live" ? "live" : "local",
@@ -550,10 +551,6 @@ async function saveSkuMappingOverrides() {
   const unlocked = await ensureSettingsUnlocked();
   if (!unlocked) {
     setStatus("Settings are locked.", true);
-    return;
-  }
-  if (!skuMappingSnapshot.editable) {
-    setStatus("SKU mapping edits are disabled in live mode.", true);
     return;
   }
   const baseByKey = new Map(skuMappingSnapshot.baseRows.map((row) => [skuMappingKey(row), normalizeSkuMappingRow(row)]));
@@ -3964,12 +3961,8 @@ saveSettingsButton?.addEventListener("click", async (event) => {
 });
 
 addSkuMappingButton?.addEventListener("click", () => {
-  if (!skuMappingSnapshot.editable) {
-    setStatus("SKU mapping edits are disabled in live mode.", true);
-    return;
-  }
   const current = readSkuMappingTableRows();
-  const blank = normalizeSkuMappingRow({ source: "local", skuId: "", productName: "", product1: "", product2: "", product3: "", product4: "" });
+  const blank = normalizeSkuMappingRow({ source: "override", skuId: "", productName: "", product1: "", product2: "", product3: "", product4: "" });
   renderSkuMappingTable([blank, ...current]);
 });
 

@@ -130,11 +130,20 @@ type LoadedState = {
 };
 
 type UploadedDemandRow = DemandUploadInputRow;
+export type EditableSkuMappingRow = {
+  skuId: string;
+  productName: string;
+  product1: string;
+  product2: string;
+  product3: string;
+  product4: string;
+};
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const FORECAST_DEFAULTS_FILE = path.join(DATA_DIR, "planner_forecast_defaults.json");
 const PLANNER_SETTINGS_FILE = path.join(DATA_DIR, "planner_shared_settings.json");
 const TIKTOK_SKU_MAPPING_FILE = path.join(DATA_DIR, "tiktok_sku_mapping.csv");
+const LOCAL_SKU_MAPPING_OVERRIDE_FILE = path.join(process.cwd(), "..", "Data", "Tiktok SKU mapping - Sheet1.csv");
 const LOCAL_SKU_SALES_FILE = path.join(DATA_DIR, "planning_sku_sales_daily.csv");
 const LOCAL_UPLOAD_AUDIT_ORDERS_FILE = path.join(DATA_DIR, "planning_upload_audit_orders.json");
 const LOCAL_UPLOAD_AUDIT_SAMPLES_FILE = path.join(DATA_DIR, "planning_upload_audit_samples.json");
@@ -256,6 +265,66 @@ function inRange(date: string, start: string, end: string) {
 
 function uniqueSorted(values: string[]) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeEditableSkuMappingRows(raw: unknown): EditableSkuMappingRow[] {
+  if (!Array.isArray(raw)) return [];
+  const unique = new Map<string, EditableSkuMappingRow>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Partial<EditableSkuMappingRow>;
+    const normalized = {
+      skuId: cleanText(row.skuId),
+      productName: cleanText(row.productName),
+      product1: cleanText(row.product1),
+      product2: cleanText(row.product2),
+      product3: cleanText(row.product3),
+      product4: cleanText(row.product4),
+    };
+    if (!(normalized.skuId && normalized.productName && (normalized.product1 || normalized.product2 || normalized.product3 || normalized.product4))) {
+      continue;
+    }
+    const key = cleanText(normalized.skuId || normalized.productName).toLowerCase();
+    unique.set(key, normalized);
+  }
+  return Array.from(unique.values());
+}
+
+function parseEditableSkuMappingCsv(text: string): EditableSkuMappingRow[] {
+  return normalizeEditableSkuMappingRows(
+    parseCsv(text).map((row) => ({
+      skuId: String(row["SKU ID"] || ""),
+      productName: String(row["Product Name"] || ""),
+      product1: String(row["Product 1"] || ""),
+      product2: String(row["Product 2"] || ""),
+      product3: String(row["Product 3"] || ""),
+      product4: String(row["Product 4"] || ""),
+    })),
+  );
+}
+
+function csvEscape(value: string) {
+  const raw = String(value ?? "");
+  if (raw.includes('"')) {
+    return `"${raw.replaceAll('"', '""')}"`;
+  }
+  if (raw.includes(",") || raw.includes("\n") || raw.includes("\r")) {
+    return `"${raw}"`;
+  }
+  return raw;
+}
+
+function stringifyEditableSkuMappingCsv(rows: EditableSkuMappingRow[]) {
+  const header = ["SKU ID", "Product Name", "Product 1", "Product 2", "Product 3", "Product 4"];
+  const lines = [header.join(",")];
+  rows.forEach((row) => {
+    lines.push(
+      [row.skuId, row.productName, row.product1, row.product2, row.product3, row.product4]
+        .map((cell) => csvEscape(cleanText(cell)))
+        .join(","),
+    );
+  });
+  return `${lines.join("\n")}\n`;
 }
 
 function chunkArray<T>(items: T[], size: number) {
@@ -698,32 +767,69 @@ async function readCollection<T>(name: string) {
   return snapshot.docs.map((doc) => doc.data() as T);
 }
 
-async function loadTikTokSkuMappings() {
-  const localPreferred = path.join(process.cwd(), "..", "Data", "Tiktok SKU mapping - Sheet1.csv");
-  const candidateFiles = usesLocalPlannerData()
-    ? [TIKTOK_SKU_MAPPING_FILE, localPreferred]
-    : [TIKTOK_SKU_MAPPING_FILE];
+export async function loadHostedSkuMappingOverrides() {
+  if (usesLocalPlannerData()) {
+    const localText = await readFile(LOCAL_SKU_MAPPING_OVERRIDE_FILE, "utf8").catch(() => "");
+    return parseEditableSkuMappingCsv(localText);
+  }
+  const doc = await readDoc<{ rows?: EditableSkuMappingRow[] }>("planningSettings", "sku_mapping");
+  return normalizeEditableSkuMappingRows(doc?.rows || []);
+}
 
-  const loaded: Array<{ filePath: string; mappings: TikTokSkuMapping[] }> = [];
+export async function saveHostedSkuMappingOverrides(rows: unknown) {
+  const payload = normalizeEditableSkuMappingRows(rows);
+
+  if (usesLocalPlannerData()) {
+    await writeFile(LOCAL_SKU_MAPPING_OVERRIDE_FILE, stringifyEditableSkuMappingCsv(payload), "utf8");
+    snapshotStateCache = null;
+    return payload;
+  }
+
+  await getFirebaseAdminDb().collection("planningSettings").doc("sku_mapping").set(
+    {
+      rows: payload,
+      updatedAt: new Date().toISOString(),
+    },
+    { merge: true },
+  );
+  liveStateCache = null;
+  return payload;
+}
+
+async function loadTikTokSkuMappings() {
+  const loaded: Array<{ source: string; mappings: TikTokSkuMapping[] }> = [];
   const errors: string[] = [];
 
-  for (const filePath of candidateFiles) {
-    try {
-      const csv = await readFile(filePath, "utf8");
-      const mappings = parseTiktokSkuMappingCsv(csv);
-      if (mappings.length) {
-        loaded.push({ filePath, mappings });
-      } else {
-        errors.push(`${filePath}: no usable rows`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error || "Unknown error");
-      errors.push(`${filePath}: ${message}`);
+  try {
+    const csv = await readFile(TIKTOK_SKU_MAPPING_FILE, "utf8");
+    const mappings = parseTiktokSkuMappingCsv(csv);
+    if (mappings.length) {
+      loaded.push({ source: TIKTOK_SKU_MAPPING_FILE, mappings });
+    } else {
+      errors.push(`${TIKTOK_SKU_MAPPING_FILE}: no usable rows`);
     }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || "Unknown error");
+    errors.push(`${TIKTOK_SKU_MAPPING_FILE}: ${message}`);
+  }
+
+  try {
+    const overrideRows = await loadHostedSkuMappingOverrides();
+    if (overrideRows.length) {
+      const mappings = parseTiktokSkuMappingCsv(stringifyEditableSkuMappingCsv(overrideRows));
+      if (mappings.length) {
+        loaded.push({ source: usesLocalPlannerData() ? LOCAL_SKU_MAPPING_OVERRIDE_FILE : "planningSettings/sku_mapping", mappings });
+      } else {
+        errors.push("sku mapping overrides: no usable rows");
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || "Unknown error");
+    errors.push(`sku mapping overrides: ${message}`);
   }
 
   if (!loaded.length) {
-    throw new Error(`Could not load TikTok SKU mapping. Tried: ${candidateFiles.join(", ")}. Errors: ${errors.join(" | ")}`);
+    throw new Error(`Could not load TikTok SKU mapping. Errors: ${errors.join(" | ")}`);
   }
 
   const keyFor = (mapping: TikTokSkuMapping) =>

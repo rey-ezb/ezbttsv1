@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { usesLocalPlannerData } from "@/lib/data-source-mode";
 import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
 import { normalizeMappedProductName } from "@/lib/sku-mapping";
+import { loadHostedSkuMappingOverrides, saveHostedSkuMappingOverrides } from "@/lib/hosted-planner";
 
 export const dynamic = "force-dynamic";
 
@@ -21,8 +21,6 @@ type MergedSkuMappingRow = RawSkuMappingRow & {
 };
 
 const BASE_MAPPING_FILE = path.join(process.cwd(), "data", "tiktok_sku_mapping.csv");
-const LOCAL_OVERRIDE_FILE = path.join(process.cwd(), "..", "Data", "Tiktok SKU mapping - Sheet1.csv");
-
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
 }
@@ -137,29 +135,29 @@ function stringifySkuMappingCsv(rows: RawSkuMappingRow[]) {
   return `${lines.join("\n")}\n`;
 }
 
-async function safeRead(filePath: string) {
-  return await readFile(filePath, "utf8").catch(() => "");
-}
-
 export async function GET() {
   try {
-    const baseCsv = await safeRead(BASE_MAPPING_FILE);
-    const localCsv = await safeRead(LOCAL_OVERRIDE_FILE);
+    const baseCsv = await readFile(BASE_MAPPING_FILE, "utf8").catch(() => "");
 
     const baseRows = baseCsv ? parseSkuMappingCsvRaw(baseCsv) : [];
-    const localRows = localCsv ? parseSkuMappingCsvRaw(localCsv) : [];
+    const overrideRows = (await loadHostedSkuMappingOverrides()).map((row) => ({
+      ...row,
+      product1: canonicalizeMappedProduct(row.product1),
+      product2: canonicalizeMappedProduct(row.product2),
+      product3: canonicalizeMappedProduct(row.product3),
+      product4: canonicalizeMappedProduct(row.product4),
+    }));
 
     const merged = new Map<string, MergedSkuMappingRow>();
     baseRows.forEach((row) => merged.set(rowKey(row), { ...row, source: "base" }));
-    localRows.forEach((row) => merged.set(rowKey(row), { ...row, source: "local" }));
+    overrideRows.forEach((row) => merged.set(rowKey(row), { ...row, source: "local" }));
 
     return NextResponse.json({
       ok: true,
-      mode: usesLocalPlannerData() ? "local" : "live",
-      editable: usesLocalPlannerData(),
+      editable: true,
       rows: Array.from(merged.values()).sort((a, b) => a.source.localeCompare(b.source) || a.productName.localeCompare(b.productName)),
       baseRows,
-      localRows,
+      localRows: overrideRows,
     });
   } catch (error) {
     return NextResponse.json(
@@ -173,12 +171,6 @@ export async function POST(request: NextRequest) {
   try {
     const unauthorized = await requireSettingsAuth(request);
     if (unauthorized) return unauthorized;
-    if (!usesLocalPlannerData()) {
-      return NextResponse.json(
-        { error: "SKU mapping edits are only enabled in local preview (PLANNER_DATA_SOURCE=local)." },
-        { status: 400 },
-      );
-    }
 
     const payload = await request.json();
     const rows = Array.isArray(payload?.rows) ? (payload.rows as RawSkuMappingRow[]) : [];
@@ -197,9 +189,10 @@ export async function POST(request: NextRequest) {
     const unique = new Map<string, RawSkuMappingRow>();
     normalized.forEach((row) => unique.set(rowKey(row), row));
 
-    await writeFile(LOCAL_OVERRIDE_FILE, stringifySkuMappingCsv(Array.from(unique.values())), "utf8");
+    const savedRows = Array.from(unique.values());
+    await saveHostedSkuMappingOverrides(savedRows);
 
-    return NextResponse.json({ ok: true, rowsWritten: unique.size });
+    return NextResponse.json({ ok: true, rowsWritten: savedRows.length });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not save SKU mapping." },
