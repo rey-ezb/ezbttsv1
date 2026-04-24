@@ -61,16 +61,21 @@ const DEFAULT_PRODUCT_UNIT_PRICES: Record<string, number> = {
 
 const PRODUCT_NAME_ALIASES: Record<string, string> = {
   "birria bombs 2p": "Birria Bomb 2-Pack",
+  "birria bomb 2p": "Birria Bomb 2-Pack",
   "birria bomb 2-pack": "Birria Bomb 2-Pack",
   "brine bombs": "Brine Bomb",
   "brine bomb": "Brine Bomb",
   "chile colorado bombs 2p": "Chile Colorado Bomb 2-Pack",
+  "chile colorado bomb 2p": "Chile Colorado Bomb 2-Pack",
   "chile colorado bomb 2-pack": "Chile Colorado Bomb 2-Pack",
   "pozole bombs 2p": "Pozole Bomb 2-Pack",
+  "pozole bomb 2p": "Pozole Bomb 2-Pack",
   "pozole bomb 2-pack": "Pozole Bomb 2-Pack",
   "pozole verde bombs 2p": "Pozole Verde Bomb 2-Pack",
+  "pozole verde bomb 2p": "Pozole Verde Bomb 2-Pack",
   "pozole verde bomb 2-pack": "Pozole Verde Bomb 2-Pack",
   "tinga bombs 2p": "Tinga Bomb 2-Pack",
+  "tinga bomb 2p": "Tinga Bomb 2-Pack",
   "tinga bomb 2-pack": "Tinga Bomb 2-Pack",
   "variety pack": "Variety Pack",
 };

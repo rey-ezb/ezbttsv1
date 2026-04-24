@@ -13,6 +13,7 @@ import { safetyStockWeeksForProduct } from "./safety-stock";
 import {
   buildSkuSalesSummaryRows,
   expandMappedDemandRows,
+  normalizeMappedProductName,
   parseTiktokSkuMappingCsv,
   type DemandUploadInputRow,
   type SkuSalesSummaryRow,
@@ -267,6 +268,24 @@ function uniqueSorted(values: string[]) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
+function canonicalizeProductName(value: unknown) {
+  const cleaned = cleanText(value);
+  if (!cleaned) return "";
+  try {
+    return normalizeMappedProductName(cleaned);
+  } catch {
+    return cleaned;
+  }
+}
+
+function canonicalizeCoreProducts(value: unknown) {
+  return String(value || "")
+    .split(",")
+    .map((item) => canonicalizeProductName(item))
+    .filter(Boolean)
+    .join(", ");
+}
+
 function normalizeEditableSkuMappingRows(raw: unknown): EditableSkuMappingRow[] {
   if (!Array.isArray(raw)) return [];
   const unique = new Map<string, EditableSkuMappingRow>();
@@ -276,10 +295,10 @@ function normalizeEditableSkuMappingRows(raw: unknown): EditableSkuMappingRow[] 
     const normalized = {
       skuId: cleanText(row.skuId),
       productName: cleanText(row.productName),
-      product1: cleanText(row.product1),
-      product2: cleanText(row.product2),
-      product3: cleanText(row.product3),
-      product4: cleanText(row.product4),
+      product1: canonicalizeProductName(row.product1),
+      product2: canonicalizeProductName(row.product2),
+      product3: canonicalizeProductName(row.product3),
+      product4: canonicalizeProductName(row.product4),
     };
     if (!(normalized.skuId && normalized.productName && (normalized.product1 || normalized.product2 || normalized.product3 || normalized.product4))) {
       continue;
@@ -582,12 +601,12 @@ function normalizeLaunchPlanOverrides(raw: unknown): LaunchPlanDoc[] {
 
 function hydrateLaunchPlans(plans: LaunchPlanDoc[]) {
   return plans.map((plan) => {
-    const productName = cleanText(plan.productName);
+    const productName = canonicalizeProductName(plan.productName);
     const metadata = PRODUCT_METADATA[productName];
     return {
       ...plan,
       productName,
-      proxyProductName: cleanText(plan.proxyProductName) || metadata?.launchProxyProduct || productName,
+      proxyProductName: canonicalizeProductName(plan.proxyProductName) || metadata?.launchProxyProduct || productName,
       launchDate: cleanText(plan.launchDate).slice(0, 10) || null,
       endDate: cleanText(plan.endDate).slice(0, 10) || null,
       launchUnitsCommitted: asNumber(plan.launchUnitsCommitted),
@@ -641,7 +660,7 @@ async function loadBundledState() {
   const demand = parseCsv(demandCsv).map((row) => ({
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
-    product_name: String(row.product_name || ""),
+    product_name: canonicalizeProductName(row.product_name),
     seller_sku_resolved: String(row.seller_sku_resolved || ""),
     net_units: asNumber(row.net_units),
     gross_sales: asNumber(row.gross_sales),
@@ -651,7 +670,7 @@ async function loadBundledState() {
   const samples = parseCsv(samplesCsv).map((row) => ({
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
-    product_name: String(row.product_name || ""),
+    product_name: canonicalizeProductName(row.product_name),
     seller_sku_resolved: String(row.seller_sku_resolved || ""),
     net_units: asNumber(row.net_units),
     gross_sales: asNumber(row.gross_sales),
@@ -662,9 +681,9 @@ async function loadBundledState() {
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
     sku_id: String(row.sku_id || ""),
-    product_name: String(row.product_name || ""),
+    product_name: canonicalizeProductName(row.product_name),
     sku_type: row.sku_type === "virtual_bundle" ? "virtual_bundle" : "core",
-    core_products: String(row.core_products || ""),
+    core_products: canonicalizeCoreProducts(row.core_products),
     units_sold: asNumber(row.units_sold),
     gross_sales: asNumber(row.gross_sales),
     avg_gross_per_unit: asNumber(row.avg_gross_per_unit),
@@ -674,7 +693,7 @@ async function loadBundledState() {
 
   const inventoryRows: InventoryDoc[] = parseCsv(inventoryCsv).map((row) => ({
     snapshotDate: String(row.date || ""),
-    product_name: String(row.product_name || ""),
+    product_name: canonicalizeProductName(row.product_name),
     seller_sku_resolved: "",
     on_hand: asNumber(row.on_hand),
     in_transit: asNumber(row.in_transit),
@@ -885,7 +904,7 @@ async function saveLocalDemandDocs(collectionName: "planningDemandDaily" | "plan
   const existingRows: DemandDoc[] = parseCsv(existingText).map((row) => ({
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
-    product_name: String(row.product_name || ""),
+    product_name: canonicalizeProductName(row.product_name),
     seller_sku_resolved: String(row.seller_sku_resolved || ""),
     net_units: asNumber(row.net_units),
     gross_sales: asNumber(row.gross_sales),
@@ -913,9 +932,9 @@ async function saveLocalSkuSalesDocs(rows: SkuSalesSummaryRow[], uploadedDates: 
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
     sku_id: String(row.sku_id || ""),
-    product_name: String(row.product_name || ""),
+    product_name: canonicalizeProductName(row.product_name),
     sku_type: row.sku_type === "virtual_bundle" ? "virtual_bundle" : "core",
-    core_products: String(row.core_products || ""),
+    core_products: canonicalizeCoreProducts(row.core_products),
     units_sold: asNumber(row.units_sold),
     gross_sales: asNumber(row.gross_sales),
     avg_gross_per_unit: asNumber(row.avg_gross_per_unit),
@@ -991,14 +1010,22 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
     ),
   );
   const campaigns = normalizeCampaignEvents(campaignsRaw);
+  const canonicalDemand = demand.map((row) => ({ ...row, product_name: canonicalizeProductName(row.product_name) }));
+  const canonicalSamples = samples.map((row) => ({ ...row, product_name: canonicalizeProductName(row.product_name) }));
+  const canonicalSkuSales = skuSales.map((row) => ({
+    ...row,
+    product_name: canonicalizeProductName(row.product_name),
+    core_products: canonicalizeCoreProducts(row.core_products),
+  }));
+  const canonicalInventory = inventory.map((row) => ({ ...row, product_name: canonicalizeProductName(row.product_name) }));
 
   const value: LoadedState = {
     state: {
       campaigns,
-      demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
-      samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
-      skuSales: skuSales.sort((a, b) => a.date.localeCompare(b.date) || a.sku_type.localeCompare(b.sku_type) || a.product_name.localeCompare(b.product_name)),
-      inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
+      demand: canonicalDemand.sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name)),
+      samples: canonicalSamples.sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name)),
+      skuSales: canonicalSkuSales.sort((a, b) => a.date.localeCompare(b.date) || a.sku_type.localeCompare(b.sku_type) || a.product_name.localeCompare(b.product_name)),
+      inventory: canonicalInventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
       forecastSettings,
       plannerSettings: normalizePlannerSharedSettings(plannerSettingsDoc),
       launchPlans,
@@ -1608,12 +1635,12 @@ export async function runHostedPlanning(params: {
             row[key] = 0;
           } else {
             const proxyName = cleanText(plan.proxyProductName) || productName;
-            const proxyMixShare = Object.keys(normalizedMonthMix).length
-              ? (normalizedMonthMix[proxyName] || 0)
-              : (futureMix[proxyName] || 0);
-            const proxyMonthUnits = totalMonthUnits * proxyMixShare;
+            const mixShare = Object.keys(normalizedMonthMix).length
+              ? (normalizedMonthMix[productName] || 0)
+              : ((futureMix[productName] || 0) > 0 ? (futureMix[productName] || 0) : (futureMix[proxyName] || 0));
+            const launchMonthUnits = totalMonthUnits * mixShare;
             const strength = asNumber(plan.launchStrengthPct) > 0 ? asNumber(plan.launchStrengthPct) / 100 : 1;
-            row[key] = proxyMonthUnits * strength * (activeDays / days);
+            row[key] = launchMonthUnits * strength * (activeDays / days);
           }
         } else {
           const mixShare = Object.keys(normalizedMonthMix).length
