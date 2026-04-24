@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/planner-styles.css?v=20260421c">
+    <link rel="stylesheet" href="/planner-styles.css?v=20260423c">
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -25,23 +25,19 @@
         </p>
         <nav class="rail-nav" aria-label="App sections">
           <button type="button" class="rail-link is-active" data-page-target="planning">Demand Planning</button>
-          <button type="button" class="rail-link" data-page-target="kpis" hidden>TikTok KPIs</button>
+          <button type="button" class="rail-link" data-page-target="campaigns">Campaigns &amp; Promos</button>
+          <button type="button" class="rail-link" data-page-target="launch-planning">Launch Planning</button>
+          <button type="button" class="rail-link rail-link-soon" data-page-target="kpis">
+            <span class="rail-link-label">TikTok KPIs</span>
+            <span class="rail-link-sub">Coming soon</span>
+          </button>
           <button type="button" class="rail-link" data-page-target="settings">Settings</button>
         </nav>
-        <div class="actions">
-          <button id="load-sample-btn" class="primary">Refresh current data</button>
-          <button id="update-live-inventory-btn" type="button">Update live inventory</button>
-        </div>
-      </aside>
 
-      <main class="workspace">
-        <section class="panel panel-uploads glass-sheen">
-          <div class="panel-header">
-            <p class="eyebrow">Inputs</p>
-            <h2>Uploads</h2>
-          </div>
-          <form id="data-upload-form" class="upload-form">
-            <div class="upload-row">
+        <section class="rail-section">
+          <details class="rail-details" open>
+            <summary>Uploads</summary>
+            <form id="data-upload-form" class="upload-form upload-form-rail">
               <label class="upload-field upload-field-platform">Platform
                 <input type="text" name="platform" value="TikTok">
               </label>
@@ -54,17 +50,21 @@
               <label class="upload-field upload-field-files">Files
                 <input type="file" name="files" accept=".csv,.xlsx" multiple>
               </label>
-              <div class="upload-actions">
-                <button type="submit">Upload files</button>
+              <div class="upload-actions upload-actions-rail">
+                <button type="submit" id="upload-btn">Upload</button>
               </div>
-            </div>
-            <div class="upload-meta">
-              <p class="helper">Upload new daily files here. If dates overlap, the newest file replaces the older rows for those dates.</p>
-              <div class="status-line" id="upload-status"></div>
-            </div>
-          </form>
+              <div class="status-line status-line-rail" id="upload-status" aria-live="polite"></div>
+              <p class="helper helper-rail">If dates overlap, the newest file replaces older rows for those dates.</p>
+            </form>
+          </details>
         </section>
+        <div class="actions">
+          <button id="load-sample-btn" class="primary">Refresh current data</button>
+          <button id="update-live-inventory-btn" type="button">Update live inventory</button>
+        </div>
+      </aside>
 
+      <main class="workspace">
         <section class="page page-active" id="page-planning">
           <section class="panel panel-summary-strip">
             <div class="summary-block glass-sheen" id="summary-block"></div>
@@ -79,10 +79,38 @@
               <div class="plan-main">
                 <input type="hidden" id="uplift-pct" name="upliftPct" value="35">
                 <div class="controls-grid">
-                  <label>Baseline start<input type="date" id="baseline-start" name="baselineStart"></label>
-                  <label>Baseline end<input type="date" id="baseline-end" name="baselineEnd"></label>
-                  <label>Planning period start<input type="date" id="horizon-start" name="horizonStart"></label>
-                  <label>Planning period end<input type="date" id="horizon-end" name="horizonEnd"></label>
+                  <label class="date-label">Baseline start
+                    <span class="date-field-wrap">
+                      <input type="text" id="baseline-start" name="baselineStart" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                      <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                      </button>
+                    </span>
+                  </label>
+                  <label class="date-label">Baseline end
+                    <span class="date-field-wrap">
+                      <input type="text" id="baseline-end" name="baselineEnd" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                      <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                      </button>
+                    </span>
+                  </label>
+                  <label class="date-label">Planning period start
+                    <span class="date-field-wrap">
+                      <input type="text" id="horizon-start" name="horizonStart" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                      <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                      </button>
+                    </span>
+                  </label>
+                  <label class="date-label">Planning period end
+                    <span class="date-field-wrap">
+                      <input type="text" id="horizon-end" name="horizonEnd" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                      <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                      </button>
+                    </span>
+                  </label>
                   <label>How to count demand
                     <select id="velocity-mode" name="velocityMode">
                       <option value="sales_only">Sales only</option>
@@ -102,7 +130,7 @@
                   </div>
                   <div class="controls-foot">
                     <div class="controls-submit">
-                      <button type="submit" class="primary">Run planning</button>
+                      <button type="submit" class="primary" id="run-planning-btn">Run planning</button>
                     </div>
                     <div class="helper-block" id="safety-rule-note"></div>
                   </div>
@@ -201,6 +229,7 @@
             <div class="workspace-tab-strip history-tab-strip" id="history-tab-strip">
               <button type="button" class="workspace-tab is-active" data-history-tab="monthly">Monthly plan</button>
               <button type="button" class="workspace-tab" data-history-tab="baseline">Baseline mix</button>
+              <button type="button" class="workspace-tab" data-history-tab="sku-sales">SKU sales</button>
               <button type="button" class="workspace-tab" data-history-tab="trends">Historical trends</button>
               <button type="button" class="workspace-tab" data-history-tab="launch">Launch planning</button>
             </div>
@@ -236,6 +265,24 @@
                     <thead id="product-mix-head"></thead>
                     <tbody id="product-mix-body">
                       <tr><td colspan="6" class="empty">Run planning to see product mix.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="history-tab-panel" data-history-panel="sku-sales">
+                <div class="panel-header panel-header-inner">
+                  <div>
+                    <p class="eyebrow">SKU Sales</p>
+                    <h3>Gross sales and units by SKU</h3>
+                    <p class="panel-subcopy">Shows true listing-level gross sales from TikTok, including virtual bundles, while the planner still uses mapped core-product units.</p>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table id="sku-sales-table">
+                    <thead id="sku-sales-head"></thead>
+                    <tbody id="sku-sales-body">
+                      <tr><td colspan="7" class="empty">SKU sales summary will appear after orders are re-uploaded with the SKU mapping.</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -348,6 +395,137 @@
           </section>
         </section>
 
+        <section class="page" id="page-campaigns">
+          <section class="panel panel-marketing glass-sheen">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Marketing</p>
+                <h2>Promotion &amp; Campaign Calendar</h2>
+                <p class="panel-subcopy">Define past and future events (Prime Day, TikTok viral dates, flash sales). This helps isolate normal demand vs. event-driven spikes.</p>
+              </div>
+            </div>
+
+            <form id="campaign-form" class="marketing-form">
+              <div class="marketing-grid marketing-grid-campaign">
+                <label>Event name
+                  <input type="text" id="campaign-name" name="name" placeholder="e.g. Prime Day 2024" autocomplete="off" required>
+                </label>
+                <label>Start date
+                  <span class="date-field-wrap">
+                    <input type="text" id="campaign-start" name="startDate" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric" required>
+                    <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                    </button>
+                  </span>
+                </label>
+                <label>End date
+                  <span class="date-field-wrap">
+                    <input type="text" id="campaign-end" name="endDate" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric" required>
+                    <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                    </button>
+                  </span>
+                </label>
+                <label>Target lift (%)
+                  <input type="number" id="campaign-lift" name="liftPct" placeholder="Optional" min="-100" max="500" step="1" inputmode="numeric">
+                </label>
+              </div>
+              <div class="actions marketing-actions">
+                <button type="submit" class="primary" id="add-campaign-btn">Add Event</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table id="campaign-table">
+                <thead>
+                  <tr>
+                    <th class="text-left">Event name</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Days</th>
+                    <th>Target lift</th>
+                    <th>Actual performance</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="campaign-body">
+                  <tr><td colspan="7" class="empty">No campaigns defined yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="page" id="page-launch-planning">
+          <section class="panel panel-marketing glass-sheen">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Marketing</p>
+                <h2>Launch Planning</h2>
+                <p class="panel-subcopy">Introducing a new product? Borrow velocity from an existing “proxy” product and simulate demand before you have real sales history.</p>
+              </div>
+            </div>
+
+            <form id="launch-plan-form" class="marketing-form">
+              <div class="marketing-grid marketing-grid-launch">
+                <input type="hidden" id="launch-edit-id" name="editId" value="">
+                <label>Brand new product name
+                  <input type="text" id="launch-new-name" name="newProductName" placeholder="e.g. Chili Bomb 4-Pack" autocomplete="off" required>
+                </label>
+                <label>Proxy product (Borrow velocity)
+                  <select id="launch-proxy-product" name="proxyProduct" required>
+                    <option value="">Select a product...</option>
+                  </select>
+                </label>
+                <label>Start date
+                  <span class="date-field-wrap">
+                    <input type="text" id="launch-start-date" name="startDate" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric" required>
+                    <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                    </button>
+                  </span>
+                </label>
+                <label>End date (Optional LTO)
+                  <span class="date-field-wrap">
+                    <input type="text" id="launch-end-date" name="endDate" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                    <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                    </button>
+                  </span>
+                </label>
+                <label>Launch strength (%)
+                  <input type="number" id="launch-strength" name="strengthPct" value="100" min="0" max="400" step="1" inputmode="numeric" required>
+                </label>
+                <label>Inbound units
+                  <input type="number" id="launch-inbound" name="committedUnits" placeholder="e.g. 500" min="0" max="1000000" step="1" inputmode="numeric" required>
+                </label>
+              </div>
+              <div class="actions marketing-actions">
+                <button type="submit" class="primary" id="add-launch-btn">Add Plan</button>
+                <button type="button" class="secondary" id="cancel-launch-edit" hidden>Cancel edit</button>
+              </div>
+            </form>
+
+            <div class="table-wrap">
+              <table id="launch-plan-table">
+                <thead>
+                  <tr>
+                    <th class="text-left">New product</th>
+                    <th>Proxy source</th>
+                    <th>Strength</th>
+                    <th>Window</th>
+                    <th>Inbound</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="launch-plan-body">
+                  <tr><td colspan="6" class="empty">No launch plans defined yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
         <section class="page" id="page-kpis" hidden>
           <section class="panel panel-kpi-filters glass-sheen">
             <div class="panel-header">
@@ -370,10 +548,20 @@
                   </select>
                 </label>
                 <label>Start
-                  <input type="date" id="kpi-start-date">
+                <span class="date-field-wrap">
+                  <input type="text" id="kpi-start-date" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                  <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                  </button>
+                </span>
                 </label>
                 <label>End
-                  <input type="date" id="kpi-end-date">
+                <span class="date-field-wrap">
+                  <input type="text" id="kpi-end-date" class="date-input" data-date-picker placeholder="mm/dd/yyyy" autocomplete="off" inputmode="numeric">
+                  <button type="button" class="date-trigger" data-date-trigger aria-label="Open calendar">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm12 8H5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9ZM6 6a1 1 0 0 0-1 1v1h14V7a1 1 0 0 0-1-1H6Z"/></svg>
+                  </button>
+                </span>
                 </label>
               </div>
               <fieldset class="kpi-source-group">
@@ -462,6 +650,31 @@
         <section class="page" id="page-settings">
           <section class="panel panel-results-primary glass-sheen">
             <div class="panel-header">
+              <p class="eyebrow">Access</p>
+              <h2>Settings password</h2>
+              <p class="panel-subcopy">This updates the shared password for editing settings. The password is stored as a hash (not plaintext).</p>
+            </div>
+            <form id="settings-password-form" class="kpi-filter-form planner-settings-form">
+              <div class="kpi-filter-grid">
+                <label>Current password
+                  <input type="password" id="settings-current-password" autocomplete="current-password" required>
+                </label>
+                <label>New password
+                  <input type="password" id="settings-new-password" autocomplete="new-password" required>
+                </label>
+                <label>Confirm new password
+                  <input type="password" id="settings-confirm-password" autocomplete="new-password" required>
+                </label>
+              </div>
+              <div class="actions planner-settings-actions">
+                <button type="submit" class="primary" id="btn-change-password">Update password</button>
+              </div>
+              <div class="status-line" id="settings-password-status" aria-live="polite"></div>
+            </form>
+          </section>
+
+          <section class="panel panel-results-primary glass-sheen">
+            <div class="panel-header">
               <p class="eyebrow">Configuration</p>
               <h2>Global Settings</h2>
             </div>
@@ -472,6 +685,12 @@
                 </label>
                 <label>Global Default Lead Time (Days)
                   <input type="number" id="setting-default-lead" name="defaultLeadTimeDays" value="8" min="1" max="180">
+                </label>
+                <label title="Used for Jan through Jun unless a product override is set.">Safety stock weeks (Jan-Jun)
+                  <input type="number" id="setting-safety-h1" name="safetyStockWeeksH1" value="3" min="0" max="26" step="0.5">
+                </label>
+                <label title="Used for Jul through Dec unless a product override is set.">Safety stock weeks (Jul-Dec)
+                  <input type="number" id="setting-safety-h2" name="safetyStockWeeksH2" value="5" min="0" max="26" step="0.5">
                 </label>
               </div>
             </form>
@@ -492,10 +711,11 @@
                       <th title="Minimum order quantity">MOQ (Units)</th>
                       <th title="Units per case pack">Case Pack</th>
                       <th title="Maximum months before spoilage risk">Shelf Life (Months)</th>
+                      <th title="Optional. Set to 0 to use the global Safety stock weeks rule.">Safety stock (wks)</th>
                     </tr>
                   </thead>
                   <tbody id="product-settings-body">
-                    <tr><td colspan="5" class="empty">Loading shared planner settings.</td></tr>
+                    <tr><td colspan="6" class="empty">Loading shared planner settings.</td></tr>
                   </tbody>
                 </table>
               </form>
@@ -504,11 +724,75 @@
               <button class="primary" id="btn-save-settings">Save Shared Settings</button>
             </div>
           </section>
+
+          <section class="panel panel-results-primary glass-sheen mt-4">
+            <div class="panel-header">
+              <p class="eyebrow">TikTok</p>
+              <h2>SKU Mapping</h2>
+            </div>
+
+            <datalist id="sku-mapping-core-products">
+              <option value="Birria Bomb 2P"></option>
+              <option value="Brine Bomb"></option>
+              <option value="Chile Colorado Bomb 2P"></option>
+              <option value="Pozole Bomb 2P"></option>
+              <option value="Pozole Verde Bomb 2P"></option>
+              <option value="Tinga Bomb 2P"></option>
+              <option value="Variety Pack"></option>
+              <option value="Ignore"></option>
+            </datalist>
+
+            <div class="table-wrap">
+              <form id="sku-mapping-form">
+                <table id="sku-mapping-table">
+                  <thead>
+                    <tr>
+                      <th>Source</th>
+                      <th class="text-left">SKU ID</th>
+                      <th class="text-left">Listing Name</th>
+                      <th>Type</th>
+                      <th title="Everything with Product 2/3/4 is treated as a virtual bundle.">Product 1</th>
+                      <th>Product 2</th>
+                      <th>Product 3</th>
+                      <th>Product 4</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sku-mapping-body">
+                    <tr><td colspan="9" class="empty">Loading SKU mapping.</td></tr>
+                  </tbody>
+                </table>
+              </form>
+            </div>
+
+            <div class="actions planner-settings-actions">
+              <button type="button" id="btn-add-sku-mapping">Add SKU</button>
+              <button type="button" class="primary" id="btn-save-sku-mapping">Save SKU Mapping</button>
+            </div>
+          </section>
         </section>
       </main>
     </div>
+
+    <dialog class="auth-dialog" id="settings-auth-dialog">
+      <form method="dialog" id="settings-auth-form" class="auth-dialog-card glass-sheen">
+        <div class="auth-dialog-head">
+          <p class="eyebrow">Protected</p>
+          <h2>Unlock Settings</h2>
+          <p class="panel-copy">Enter the shared password to edit settings and mappings.</p>
+        </div>
+        <label>Password
+          <input type="password" id="settings-auth-password" autocomplete="current-password" required>
+        </label>
+        <div class="actions auth-dialog-actions">
+          <button type="button" id="settings-auth-cancel">Cancel</button>
+          <button type="submit" class="primary" id="settings-auth-submit">Unlock</button>
+        </div>
+        <div class="status-line" id="settings-auth-status" aria-live="polite"></div>
+      </form>
+    </dialog>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-    <script src="/planner-app.js?v=20260421c"></script>
+    <script src="/planner-app.js?v=20260423l"></script>
   </body>
 </html>

@@ -7,16 +7,36 @@ const monthlyPlanHead = document.getElementById("monthly-plan-head");
 const monthlyPlanBody = document.getElementById("monthly-plan-body");
 const productMixHead = document.getElementById("product-mix-head");
 const productMixBody = document.getElementById("product-mix-body");
+const skuSalesHead = document.getElementById("sku-sales-head");
+const skuSalesBody = document.getElementById("sku-sales-body");
 const loadSampleBtn = document.getElementById("load-sample-btn");
 const updateLiveInventoryBtn = document.getElementById("update-live-inventory-btn");
+const uploadBtn = document.getElementById("upload-btn");
 const dataUploadForm = document.getElementById("data-upload-form");
 const planForm = document.getElementById("plan-form");
+const runPlanningBtn = document.getElementById("run-planning-btn");
+const campaignForm = document.getElementById("campaign-form");
+const campaignBody = document.getElementById("campaign-body");
+const launchPlanForm = document.getElementById("launch-plan-form");
+const launchPlanBody = document.getElementById("launch-plan-body");
+const launchProxyProductSelect = document.getElementById("launch-proxy-product");
+const addLaunchButton = document.getElementById("add-launch-btn");
+const cancelLaunchEditButton = document.getElementById("cancel-launch-edit");
+const launchEditIdInput = document.getElementById("launch-edit-id");
 const safetyRuleNote = document.getElementById("safety-rule-note");
+const settingsPasswordForm = document.getElementById("settings-password-form");
+const settingsCurrentPassword = document.getElementById("settings-current-password");
+const settingsNewPassword = document.getElementById("settings-new-password");
+const settingsConfirmPassword = document.getElementById("settings-confirm-password");
+const settingsPasswordStatus = document.getElementById("settings-password-status");
+const changePasswordButton = document.getElementById("btn-change-password");
 const uploadFileInput = dataUploadForm.querySelector('input[name="files"]');
 const uploadTypeInput = dataUploadForm.querySelector('select[name="uploadType"]');
 const railButtons = Array.from(document.querySelectorAll("[data-page-target]"));
 const pages = {
   planning: document.getElementById("page-planning"),
+  campaigns: document.getElementById("page-campaigns"),
+  "launch-planning": document.getElementById("page-launch-planning"),
   kpis: document.getElementById("page-kpis"),
   settings: document.getElementById("page-settings"),
 };
@@ -83,12 +103,18 @@ const launchScenariosBody = document.getElementById("launch-scenarios-body");
 const globalSettingsForm = document.getElementById("global-settings-form");
 const productSettingsBody = document.getElementById("product-settings-body");
 const saveSettingsButton = document.getElementById("btn-save-settings");
+const skuMappingBody = document.getElementById("sku-mapping-body");
+const addSkuMappingButton = document.getElementById("btn-add-sku-mapping");
+const saveSkuMappingButton = document.getElementById("btn-save-sku-mapping");
 
 let inventoryUploaded = false;
 let forecastSettings = {};
 let monthlyActualMix = {};
 let monthlyActuals = {};
 let sharedPlannerSettings = null;
+let marketingConfig = { campaigns: [], launchPlans: [] };
+let marketingConfigSource = "local";
+let skuMappingSnapshot = { baseRows: [], localRows: [], rows: [], editable: false, mode: "local" };
 let forecastYear = new Date().getFullYear();
 let activePage = "planning";
 let activeKpiTab = "orders";
@@ -100,6 +126,7 @@ let activeForecastDialogMonth = "";
 let activeHistoryTab = "monthly";
 let kpisRequested = false;
 let activeHelpTrigger = null;
+let activeLaunchEditId = "";
 const plannerVariant = new URLSearchParams(window.location.search).get("plannerVariant") || "current";
 const floatingHelpTooltip = document.createElement("div");
 floatingHelpTooltip.className = "app-tooltip";
@@ -109,19 +136,30 @@ document.body.appendChild(floatingHelpTooltip);
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const CORE_PRODUCTS = [
   "Birria Bomb 2-Pack",
+  "Brine Bomb",
   "Chile Colorado Bomb 2-Pack",
   "Pozole Bomb 2-Pack",
   "Pozole Verde Bomb 2-Pack",
   "Tinga Bomb 2-Pack",
-  "Brine Bomb",
   "Variety Pack",
 ];
 const FORECAST_STORAGE_KEY = "demand-planning-rail-collapsed";
+const MARKETING_STORAGE_KEY = "demand-planning-marketing-config-v1";
 const PAGE_CONTENT = {
   planning: {
     chip: "Demand Planning",
     title: "Lean planner, separate surface.",
     lead: "This planner uses your real core products, rolls bundle sales into them, and helps you decide what to reorder next.",
+  },
+  campaigns: {
+    chip: "Marketing",
+    title: "Promotion & Campaign Calendar",
+    lead: "Log past and future events so we can reference promo windows, estimate lift, and boost future plans without wiping long campaigns out of the baseline.",
+  },
+  "launch-planning": {
+    chip: "Marketing",
+    title: "Inbound & Launch Strategy",
+    lead: "Model a brand-new SKU using a proxy product curve, launch strength, and your committed inbound units.",
   },
   kpis: {
     chip: "TikTok KPIs",
@@ -155,6 +193,17 @@ function moneyPrecise(value) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value));
 }
 
+function humanDate(value) {
+  const iso = String(value || "").slice(0, 10);
+  if (!iso) return "";
+  const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return iso;
+  const [, year, month, day] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(date);
+}
+
 function percent(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "0%";
   return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(Number(value) * 100)}%`;
@@ -167,6 +216,457 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll("\"", "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function displayProductName(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const replaced = raw.replaceAll("2-Pack", "2P");
+  const canonicalMap = {
+    "Birria Bomb 2-Pack": "Birria Bombs 2P",
+    "Chile Colorado Bomb 2-Pack": "Chile Colorado Bombs 2P",
+    "Pozole Bomb 2-Pack": "Pozole Bombs 2P",
+    "Pozole Verde Bomb 2-Pack": "Pozole Verde Bombs 2P",
+    "Tinga Bomb 2-Pack": "Tinga Bombs 2P",
+    "Brine Bomb": "Brine Bombs",
+  };
+  return canonicalMap[raw] || canonicalMap[replaced] || replaced;
+}
+
+function roundCurrency(value) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.round((numeric + Number.EPSILON) * 100) / 100;
+}
+
+function productSortValue(value) {
+  return displayProductName(value).toLowerCase();
+}
+
+function sortRowsByProductName(rows, key = "product_name") {
+  return [...(Array.isArray(rows) ? rows : [])].sort((left, right) => {
+    const leftLabel = productSortValue(left?.[key] || left?.name || "");
+    const rightLabel = productSortValue(right?.[key] || right?.name || "");
+    return leftLabel.localeCompare(rightLabel) || String(left?.sku_id || "").localeCompare(String(right?.sku_id || ""));
+  });
+}
+
+function makeClientId(prefix) {
+  try {
+    if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
+  } catch {
+    // fall through
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function setSettingsPasswordStatus(message, isError = false) {
+  if (!settingsPasswordStatus) return;
+  settingsPasswordStatus.textContent = String(message || "");
+  settingsPasswordStatus.dataset.error = isError ? "true" : "false";
+}
+
+function parsePercentValue(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function inclusiveDayCount(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  const diffDays = Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+  return diffDays >= 0 ? diffDays + 1 : 0;
+}
+
+function formatDateWindow(startDate, endDate) {
+  if (!startDate) return "—";
+  if (!endDate) return `${startDate} to Forever`;
+  return `${startDate} to ${endDate}`;
+}
+
+function normalizeMarketingConfig(source) {
+  const next = source && typeof source === "object" ? source : {};
+  const campaigns = Array.isArray(next.campaigns) ? next.campaigns : [];
+  const launchPlans = Array.isArray(next.launchPlans) ? next.launchPlans : Array.isArray(next.launches) ? next.launches : [];
+  return {
+    campaigns: campaigns
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        id: String(row.id || makeClientId("campaign")),
+        name: String(row.name || "").trim(),
+        startDate: String(row.startDate || ""),
+        endDate: String(row.endDate || ""),
+        liftPct: row.liftPct === null || row.liftPct === undefined ? null : Number(row.liftPct),
+      }))
+      .filter((row) => row.name && row.startDate && row.endDate),
+    launchPlans: launchPlans
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        id: String(row.id || makeClientId("launch")),
+        newProductName: String(row.newProductName || row.new_product_name || "").trim(),
+        proxyProduct: String(row.proxyProduct || row.proxy_product || "").trim(),
+        startDate: String(row.startDate || ""),
+        endDate: String(row.endDate || ""),
+        strengthPct: Number(row.strengthPct ?? row.strength_pct ?? 100),
+        committedUnits: Number(row.committedUnits ?? row.committed_units ?? 0),
+      }))
+      .filter((row) => row.newProductName && row.proxyProduct && row.startDate),
+  };
+}
+
+function readLocalMarketingConfig() {
+  try {
+    const raw = window.localStorage.getItem(MARKETING_STORAGE_KEY);
+    if (!raw) return normalizeMarketingConfig({});
+    return normalizeMarketingConfig(JSON.parse(raw));
+  } catch {
+    return normalizeMarketingConfig({});
+  }
+}
+
+function writeLocalMarketingConfig(config) {
+  try {
+    window.localStorage.setItem(MARKETING_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // ignore local storage failures (private mode, etc.)
+  }
+}
+
+async function loadMarketingConfig() {
+  marketingConfig = readLocalMarketingConfig();
+  marketingConfigSource = "local";
+  try {
+    const response = await fetch("/api/marketing-config");
+    if (response.ok) {
+      const payload = await readJsonResponse(response);
+      marketingConfig = normalizeMarketingConfig(payload.marketingConfig || payload);
+      marketingConfigSource = "api";
+      writeLocalMarketingConfig(marketingConfig);
+    }
+  } catch {
+    // keep local fallback
+  }
+  renderMarketingConfig();
+}
+
+async function persistMarketingConfig(nextConfig, successMessage) {
+  const unlocked = await ensureSettingsUnlocked();
+  if (!unlocked) {
+    setStatus("Settings are locked.", true);
+    return;
+  }
+  marketingConfig = normalizeMarketingConfig(nextConfig);
+  writeLocalMarketingConfig(marketingConfig);
+  marketingConfigSource = "local";
+  try {
+    const response = await fetch("/api/marketing-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ marketingConfig }),
+    });
+    if (response.ok) {
+      const payload = await readJsonResponse(response);
+      marketingConfig = normalizeMarketingConfig(payload.marketingConfig || payload);
+      marketingConfigSource = "api";
+      writeLocalMarketingConfig(marketingConfig);
+    }
+  } catch {
+    // keep local
+  }
+  renderMarketingConfig();
+  if (successMessage) {
+    const suffix = marketingConfigSource === "api" ? "" : " Saved locally (API stub not active yet).";
+    setStatus(`${successMessage}${suffix}`);
+  }
+}
+
+function pctLabel(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  const numeric = Number(value);
+  const sign = numeric > 0 ? "+" : "";
+  return `${sign}${integer(numeric)}%`;
+}
+
+function normalizeSkuMappingRow(raw) {
+  const row = raw && typeof raw === "object" ? raw : {};
+  const skuTypeRaw = String(row.skuType || row.sku_type || "").trim().toLowerCase();
+  return {
+    skuId: String(row.skuId || row["SKU ID"] || "").trim(),
+    productName: String(row.productName || row["Product Name"] || "").trim(),
+    product1: String(row.product1 || row["Product 1"] || "").trim(),
+    product2: String(row.product2 || row["Product 2"] || "").trim(),
+    product3: String(row.product3 || row["Product 3"] || "").trim(),
+    product4: String(row.product4 || row["Product 4"] || "").trim(),
+    source: row.source === "local" ? "local" : "base",
+    skuType: skuTypeRaw === "bundle" || skuTypeRaw === "virtual_bundle" ? "bundle" : skuTypeRaw === "base" || skuTypeRaw === "core" ? "base" : "",
+  };
+}
+
+function normalizedKey(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function deriveSkuTypeFromProducts(row) {
+  const normalized = normalizeSkuMappingRow(row);
+  const ignored = normalizedKey(normalized.product1) === "ignore";
+  if (ignored) return "ignore";
+  const filled = [normalized.product1, normalized.product2, normalized.product3, normalized.product4].filter((value) => String(value || "").trim());
+  if (filled.length <= 1) return "base";
+  return "bundle";
+}
+
+function normalizeSkuTypeForSelect(value, fallbackRow) {
+  const cleaned = String(value || "").trim().toLowerCase();
+  if (cleaned === "ignore") return "ignore";
+  if (cleaned === "bundle" || cleaned === "virtual_bundle") return "bundle";
+  if (cleaned === "base" || cleaned === "core") return "base";
+  return deriveSkuTypeFromProducts(fallbackRow);
+}
+
+function skuMappingKey(row) {
+  const key = String(row?.skuId || row?.productName || "").trim().toLowerCase();
+  return key.replace(/\s+/g, " ");
+}
+
+function skuMappingEquivalent(a, b) {
+  const left = normalizeSkuMappingRow(a);
+  const right = normalizeSkuMappingRow(b);
+  return (
+    left.skuId === right.skuId &&
+    left.productName === right.productName &&
+    left.product1 === right.product1 &&
+    left.product2 === right.product2 &&
+    left.product3 === right.product3 &&
+    left.product4 === right.product4
+  );
+}
+
+function renderSkuMappingTable(rows) {
+  if (!skuMappingBody) return;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    skuMappingBody.innerHTML = '<tr><td colspan="9" class="empty">No SKU mappings loaded.</td></tr>';
+    return;
+  }
+  skuMappingBody.innerHTML = rows.map((row) => {
+    const normalized = normalizeSkuMappingRow(row);
+    const sourceLabel = normalized.source === "local" ? "LOCAL" : "BASE";
+    const sourceClass = normalized.source === "local" ? "status-covered" : "status-no-demand";
+    const skuType = normalizeSkuTypeForSelect(normalized.skuType, normalized);
+    return `
+      <tr data-sku-mapping-row="true" data-sku-mapping-source="${normalized.source}" data-sku-mapping-key="${escapeHtml(skuMappingKey(normalized))}">
+        <td><span class="status ${sourceClass}">${sourceLabel}</span></td>
+        <td class="text-left"><input type="text" inputmode="numeric" data-sku-map="skuId" value="${escapeHtml(normalized.skuId)}"></td>
+        <td class="text-left"><input type="text" data-sku-map="productName" value="${escapeHtml(normalized.productName)}"></td>
+        <td>
+          <select data-sku-map="skuType" aria-label="SKU type">
+            <option value="base" ${skuType === "base" ? "selected" : ""}>Base</option>
+            <option value="bundle" ${skuType === "bundle" ? "selected" : ""}>Bundle</option>
+            <option value="ignore" ${skuType === "ignore" ? "selected" : ""}>Ignore</option>
+          </select>
+        </td>
+        <td><input type="text" list="sku-mapping-core-products" data-sku-map="product1" value="${escapeHtml(displayProductName(normalized.product1))}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-sku-map="product2" value="${escapeHtml(displayProductName(normalized.product2))}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-sku-map="product3" value="${escapeHtml(displayProductName(normalized.product3))}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-sku-map="product4" value="${escapeHtml(displayProductName(normalized.product4))}"></td>
+        <td><button type="button" data-sku-mapping-delete>Delete</button></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function readSkuMappingTableRows() {
+  if (!skuMappingBody) return [];
+  return Array.from(skuMappingBody.querySelectorAll('tr[data-sku-mapping-row="true"]')).map((tr) => {
+    const inputs = Array.from(tr.querySelectorAll("input[data-sku-map]"));
+    const selects = Array.from(tr.querySelectorAll("select[data-sku-map]"));
+    const values = Object.fromEntries(inputs.map((input) => [String(input.dataset.skuMap || ""), String(input.value || "").trim()]));
+    selects.forEach((select) => {
+      values[String(select.dataset.skuMap || "")] = String(select.value || "").trim();
+    });
+    return normalizeSkuMappingRow({
+      source: tr.dataset.skuMappingSource || "base",
+      skuId: values.skuId,
+      productName: values.productName,
+      skuType: values.skuType,
+      product1: values.product1,
+      product2: values.product2,
+      product3: values.product3,
+      product4: values.product4,
+    });
+  });
+}
+
+function normalizeSkuMappingRowForSave(row) {
+  const normalized = normalizeSkuMappingRow(row);
+  const skuType = normalizeSkuTypeForSelect(normalized.skuType, normalized);
+  if (skuType === "ignore") {
+    return {
+      ...normalized,
+      skuType,
+      product1: "Ignore",
+      product2: "",
+      product3: "",
+      product4: "",
+    };
+  }
+  if (skuType === "base") {
+    return {
+      ...normalized,
+      skuType,
+      product2: "",
+      product3: "",
+      product4: "",
+    };
+  }
+  return { ...normalized, skuType };
+}
+
+async function loadSkuMapping() {
+  if (!skuMappingBody) return;
+  try {
+    const payload = await fetchJson("/api/sku-mapping");
+    skuMappingSnapshot = {
+      baseRows: Array.isArray(payload.baseRows) ? payload.baseRows.map(normalizeSkuMappingRow) : [],
+      localRows: Array.isArray(payload.localRows) ? payload.localRows.map((row) => ({ ...normalizeSkuMappingRow(row), source: "local" })) : [],
+      rows: Array.isArray(payload.rows) ? payload.rows.map(normalizeSkuMappingRow) : [],
+      editable: Boolean(payload.editable),
+      mode: payload.mode === "live" ? "live" : "local",
+    };
+    renderSkuMappingTable(skuMappingSnapshot.rows);
+    if (saveSkuMappingButton instanceof HTMLButtonElement) saveSkuMappingButton.disabled = !skuMappingSnapshot.editable;
+    if (addSkuMappingButton instanceof HTMLButtonElement) addSkuMappingButton.disabled = !skuMappingSnapshot.editable;
+  } catch (error) {
+    skuMappingBody.innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(error.message || "Could not load SKU mapping.")}</td></tr>`;
+    if (saveSkuMappingButton instanceof HTMLButtonElement) saveSkuMappingButton.disabled = true;
+    if (addSkuMappingButton instanceof HTMLButtonElement) addSkuMappingButton.disabled = true;
+  }
+}
+
+async function saveSkuMappingOverrides() {
+  const unlocked = await ensureSettingsUnlocked();
+  if (!unlocked) {
+    setStatus("Settings are locked.", true);
+    return;
+  }
+  if (!skuMappingSnapshot.editable) {
+    setStatus("SKU mapping edits are disabled in live mode.", true);
+    return;
+  }
+  const baseByKey = new Map(skuMappingSnapshot.baseRows.map((row) => [skuMappingKey(row), normalizeSkuMappingRow(row)]));
+  const overrideRows = readSkuMappingTableRows()
+    .map((row) => normalizeSkuMappingRowForSave(row))
+    .filter((row) => row.skuId && row.productName && (row.product1 || row.product2 || row.product3 || row.product4))
+    .filter((row) => {
+      const base = baseByKey.get(skuMappingKey(row));
+      return !base || !skuMappingEquivalent(row, base);
+    })
+    .map((row) => ({
+      skuId: row.skuId,
+      productName: row.productName,
+      product1: row.product1,
+      product2: row.product2,
+      product3: row.product3,
+      product4: row.product4,
+    }));
+
+  setButtonBusy(saveSkuMappingButton, true, "Saving...");
+  try {
+    const payload = await postJson("/api/sku-mapping", { rows: overrideRows });
+    setStatus(`SKU mapping saved (${integer(payload.rowsWritten || overrideRows.length)} overrides).`);
+    await loadSkuMapping();
+  } catch (error) {
+    setStatus(error.message || "Could not save SKU mapping.", true);
+  } finally {
+    setButtonBusy(saveSkuMappingButton, false);
+  }
+}
+
+function renderMarketingConfig() {
+  renderCampaignsTable(marketingConfig.campaigns || []);
+  renderLaunchPlansTable(marketingConfig.launchPlans || []);
+  renderLaunchProxyOptions();
+}
+
+function renderLaunchProxyOptions() {
+  if (!(launchProxyProductSelect instanceof HTMLSelectElement)) return;
+  const selected = launchProxyProductSelect.value;
+  const options = [
+    `<option value="">Select a product...</option>`,
+    ...CORE_PRODUCTS.map((product) => `<option value="${escapeHtml(product)}">${escapeHtml(displayProductName(product))}</option>`),
+  ];
+  launchProxyProductSelect.innerHTML = options.join("");
+  if (selected) {
+    launchProxyProductSelect.value = selected;
+  }
+}
+
+function renderCampaignsTable(campaigns) {
+  if (!campaignBody) return;
+  if (!Array.isArray(campaigns) || campaigns.length === 0) {
+    campaignBody.innerHTML = `<tr><td colspan="7" class="empty">No campaigns defined yet.</td></tr>`;
+    return;
+  }
+  const rows = campaigns
+    .slice()
+    .sort((a, b) => String(a.startDate || "").localeCompare(String(b.startDate || "")))
+    .map((campaign) => {
+      const days = inclusiveDayCount(campaign.startDate, campaign.endDate);
+      return `
+        <tr>
+          <td class="text-left">${escapeHtml(campaign.name)}</td>
+          <td>${escapeHtml(campaign.startDate)}</td>
+          <td>${escapeHtml(campaign.endDate)}</td>
+          <td>${integer(days)}</td>
+          <td>${pctLabel(campaign.liftPct)}</td>
+          <td class="muted">—</td>
+          <td><button type="button" class="table-action" data-campaign-delete="${escapeHtml(campaign.id)}">Delete</button></td>
+        </tr>
+      `;
+    })
+    .join("");
+  campaignBody.innerHTML = rows;
+}
+
+function renderLaunchPlansTable(plans) {
+  if (!launchPlanBody) return;
+  if (!Array.isArray(plans) || plans.length === 0) {
+    launchPlanBody.innerHTML = `<tr><td colspan="6" class="empty">No launch plans defined yet.</td></tr>`;
+    return;
+  }
+  const rows = sortRowsByProductName(plans, "newProductName")
+    .map((plan) => `
+      <tr>
+        <td class="text-left">${escapeHtml(displayProductName(plan.newProductName))}</td>
+        <td>${escapeHtml(displayProductName(plan.proxyProduct))}</td>
+        <td>${pctLabel(plan.strengthPct)}</td>
+        <td>${escapeHtml(formatDateWindow(plan.startDate, plan.endDate))}</td>
+        <td>${integer(plan.committedUnits)}</td>
+        <td>
+          <button type="button" class="table-action" data-launch-edit="${escapeHtml(plan.id)}">Edit</button>
+          <button type="button" class="table-action" data-launch-delete="${escapeHtml(plan.id)}">Delete</button>
+        </td>
+      </tr>
+    `)
+    .join("");
+  launchPlanBody.innerHTML = rows;
+}
+
+function setLaunchEditMode(plan) {
+  activeLaunchEditId = String(plan?.id || "");
+  if (launchEditIdInput) launchEditIdInput.value = activeLaunchEditId;
+  if (addLaunchButton) addLaunchButton.textContent = "Save changes";
+  if (cancelLaunchEditButton) cancelLaunchEditButton.hidden = false;
+}
+
+function clearLaunchEditMode() {
+  activeLaunchEditId = "";
+  if (launchEditIdInput) launchEditIdInput.value = "";
+  if (addLaunchButton) addLaunchButton.textContent = "Add Plan";
+  if (cancelLaunchEditButton) cancelLaunchEditButton.hidden = true;
 }
 
 function cleanUploadText(value) {
@@ -308,12 +808,14 @@ function normalizeUploadRows(rawRows, platform) {
   const orderStatusCol = pickUploadColumn(columns, ["Order Status"], [["order", "status"]]);
   const orderSubstatusCol = pickUploadColumn(columns, ["Order Substatus"], [["order", "substatus"]]);
   const cancelTypeCol = pickUploadColumn(columns, ["Cancelation/Return Type", "Cancellation/Return Type"], [["cancel", "return", "type"]]);
+  const skuIdCol = pickUploadColumn(columns, ["SKU ID", "Sku ID"], [["sku", "id"]]);
   const productNameCol = pickUploadColumn(columns, ["Product Name"], [["product", "name"]]);
   const sellerSkuCol = pickUploadColumn(columns, ["Seller SKU"], [["seller", "sku"]]);
   const bundleSkuCol = pickUploadColumn(columns, ["Virtual Bundle Seller SKU", " Virtual Bundle Seller SKU"], [["virtual", "bundle", "seller", "sku"]]);
   const quantityCol = pickUploadColumn(columns, ["Quantity"], [["quantity"]]);
   const returnedQuantityCol = pickUploadColumn(columns, ["Sku Quantity of return", "SKU Quantity of return"], [["return", "quantity"]]);
   const grossSalesCol = pickUploadColumn(columns, ["SKU Subtotal Before Discount"], [["sku", "subtotal", "before", "discount"]]);
+  const sellerDiscountCol = pickUploadColumn(columns, ["SKU Seller Discount"], [["sku", "seller", "discount"], ["seller", "discount"]]);
   const paidTimeCol = pickUploadColumn(columns, ["Paid Time"], [["paid", "time"]]);
   const createdTimeCol = pickUploadColumn(columns, ["Created Time"], [["created", "time"]]);
   const cancelledTimeCol = pickUploadColumn(columns, ["Cancelled Time", "Canceled Time"], [["cancelled", "time"], ["canceled", "time"]]);
@@ -326,19 +828,37 @@ function normalizeUploadRows(rawRows, platform) {
     const quantity = parseUploadNumber(row[quantityCol]);
     const returnedQuantity = parseUploadNumber(row[returnedQuantityCol]);
     const grossSales = parseUploadNumber(row[grossSalesCol]);
+    const sellerDiscount = parseUploadNumber(sellerDiscountCol ? row[sellerDiscountCol] : 0);
     const orderDate = parseUploadDate(row[paidTimeCol]) || parseUploadDate(row[createdTimeCol]);
     const statusText = `${orderStatus} ${orderSubstatus} ${cancelType}`.toLowerCase();
     const isCancelled = statusText.includes("cancel") || Boolean(parseUploadDate(row[cancelledTimeCol]));
     const netUnits = isCancelled ? 0 : Math.max(quantity - returnedQuantity, 0);
+    // IMPORTANT: "gross_sales" is used as *Gross Product Sales* (TikTok dashboard GMV-style),
+    // i.e. SUM(SKU Subtotal Before Discount). This includes cancelled rows (GMV), while demand units
+    // still use net units (quantity - returns) so planning stays conservative.
+    const grossProductSales = grossSales;
+    // Net gross (planner-style): finance-like estimate that matches TikTok's "Net product sales" shape:
+    //   gross before discount - seller-funded discount, then scaled down for returned units.
+    // We intentionally ignore platform discount because it doesn't reduce what the seller earns.
+    // If Quantity is missing (some exports), fall back to gross - seller discount for consistency.
+    const grossLessSellerDiscount = Math.max(grossSales - sellerDiscount, 0);
+    const netGrossSalesEst =
+      isCancelled || netUnits <= 0
+        ? 0
+        : quantity > 0
+          ? roundCurrency(grossLessSellerDiscount * (netUnits / quantity))
+          : grossLessSellerDiscount;
     return {
       platform: cleanUploadText(platform) || "TikTok",
       order_id: cleanUploadText(row[orderIdCol]),
       order_date: orderDate,
+      sku_id: cleanUploadText(row[skuIdCol]),
       product_name: productName,
       seller_sku_resolved: cleanUploadText(row[sellerSkuCol]) || cleanUploadText(row[bundleSkuCol]),
       quantity,
       returned_quantity: returnedQuantity,
-      gross_sales: grossSales,
+      gross_sales: grossProductSales,
+      net_gross_sales: netGrossSalesEst,
       net_units: netUnits,
     };
   }).filter((row) => row.order_date && row.product_name);
@@ -359,14 +879,16 @@ function aggregateLeanDemandRows(normalizedRows, platform) {
         seller_sku_resolved: skuLookup[componentName] || "",
         net_units: 0,
         gross_sales: 0,
+        net_gross_sales: 0,
       };
       current.net_units += Number(row.net_units || 0) * multiplier;
       current.gross_sales += totalMultiplier ? (Number(row.gross_sales || 0) * multiplier) / totalMultiplier : 0;
+      current.net_gross_sales += totalMultiplier ? (Number(row.net_gross_sales || 0) * multiplier) / totalMultiplier : 0;
       grouped.set(key, current);
     });
   });
   return Array.from(grouped.values())
-    .filter((row) => row.net_units !== 0 || row.gross_sales !== 0)
+    .filter((row) => row.net_units !== 0 || row.gross_sales !== 0 || row.net_gross_sales !== 0)
     .sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
 }
 
@@ -392,8 +914,35 @@ async function buildLeanUploadPayload(files, platform) {
     rawRowCount += rawRows.length;
     allNormalizedRows.push(...normalizeUploadRows(rawRows, platform));
   }
-  const rows = aggregateLeanDemandRows(allNormalizedRows, platform);
-  const uploadedDates = Array.from(new Set(rows.map((row) => row.date))).sort();
+
+  // Keep the upload payload lean: we do not need order-level rows on the server.
+  // Group by day + SKU so the JSON stays small even for large historical exports.
+  const grouped = new Map();
+  allNormalizedRows.forEach((row) => {
+    const date = cleanUploadText(row.order_date).slice(0, 10);
+    if (!date) return;
+    const skuId = cleanUploadText(row.sku_id);
+    const listingName = cleanUploadText(row.product_name);
+    const sellerSku = cleanUploadText(row.seller_sku_resolved);
+    const key = `${date}__${skuId}__${sellerSku}__${listingName}`;
+    const current = grouped.get(key) || {
+      platform: cleanUploadText(platform) || "TikTok",
+      order_date: date,
+      sku_id: skuId,
+      product_name: listingName,
+      seller_sku_resolved: sellerSku,
+      net_units: 0,
+      gross_sales: 0,
+      net_gross_sales: 0,
+    };
+    current.net_units += Number(row.net_units || 0);
+    current.gross_sales = roundCurrency(Number(current.gross_sales || 0) + Number(row.gross_sales || 0));
+    current.net_gross_sales = roundCurrency(Number(current.net_gross_sales || 0) + Number(row.net_gross_sales || 0));
+    grouped.set(key, current);
+  });
+
+  const rows = Array.from(grouped.values()).filter((row) => row.order_date && row.product_name);
+  const uploadedDates = Array.from(new Set(rows.map((row) => row.order_date))).sort();
   return {
     platform: cleanUploadText(platform) || "TikTok",
     rows,
@@ -403,13 +952,43 @@ async function buildLeanUploadPayload(files, platform) {
   };
 }
 
+function chunkRowsByDate(rows, maxRows = 1500) {
+  const byDate = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const date = cleanUploadText(row.order_date || row.date).slice(0, 10);
+    if (!date) return;
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push(row);
+  });
+  const dates = Array.from(byDate.keys()).sort();
+  const chunks = [];
+  let currentDates = [];
+  let currentRows = [];
+  let currentCount = 0;
+  dates.forEach((date) => {
+    const dayRows = byDate.get(date) || [];
+    if (currentCount > 0 && currentCount + dayRows.length > maxRows) {
+      chunks.push({ uploadedDates: currentDates, rows: currentRows });
+      currentDates = [];
+      currentRows = [];
+      currentCount = 0;
+    }
+    currentDates.push(date);
+    currentRows.push(...dayRows);
+    currentCount += dayRows.length;
+  });
+  if (currentCount) chunks.push({ uploadedDates: currentDates, rows: currentRows });
+  return chunks;
+}
+
 const HEADER_HELP = {
   "Status": "Planner status summary. Spoilage Risk is currently estimated as: projected_supply_days = (on_hand + in_transit + recommended_order_units) / forecast_daily_demand. The row is marked Spoilage Risk when projected_supply_days is greater than shelf_life_months * 30. This is not batch-aware, so it does not distinguish older warehouse stock from newer fresh inventory.",
   "Daily velocity": "Average units sold per day from the selected baseline dates.",
   "Order units": "Actual units sold in the selected baseline date range.",
   "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on and there are more than 14 selling days, the planner removes the top 2 highest sales days before calculating demand velocity.",
   "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
-  "Gross sales": "Gross product sales in the selected baseline dates.",
+  "Gross sales": "Gross product sales in the selected baseline dates (SUM of SKU Subtotal Before Discount). This includes cancelled orders (GMV-style); demand units remain net of returns.",
+  "Net gross (est.)": "Planner-style net product sales estimate (TikTok finance shape). Cancelled orders are set to $0. We subtract seller-funded discount from SKU Subtotal Before Discount, then prorate for returned units. Platform discount is not subtracted.",
   "On hand": "Units physically available right now from the latest inventory snapshot.",
   "In transit": "Units already sent inbound but not available to sell yet.",
   "Transit start": "First snapshot date where the current inbound shipment appears as in transit.",
@@ -483,16 +1062,45 @@ function hideFloatingHelpTooltip() {
 async function syncHostedKpiAvailability() {
   if (!hostedKpiButton || !pages.kpis) return;
   const unavailable = true;
-  hostedKpiButton.hidden = unavailable;
-  pages.kpis.hidden = unavailable;
-  if (unavailable && activePage === "kpis") {
-    setActivePage("planning");
-  }
+  // Keep the nav item visible as "Coming soon" without enabling the page.
+  hostedKpiButton.hidden = false;
+  hostedKpiButton.dataset.disabled = unavailable ? "true" : "false";
+  hostedKpiButton.setAttribute("aria-disabled", unavailable ? "true" : "false");
+  pages.kpis.hidden = true;
+  if (activePage === "kpis") setActivePage("planning");
 }
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message || "";
   uploadStatus.dataset.error = isError ? "true" : "false";
+}
+
+function setButtonBusy(button, busy, label) {
+  if (!(button instanceof HTMLElement)) return;
+  const node = button;
+  if (busy) {
+    if (!node.dataset.originalLabel) {
+      node.dataset.originalLabel = node.textContent || "";
+    }
+    node.classList.add("is-busy");
+    node.setAttribute("aria-busy", "true");
+    if (node instanceof HTMLButtonElement) {
+      node.disabled = true;
+    }
+    const nextLabel = label || node.dataset.originalLabel || node.textContent || "Working...";
+    node.innerHTML = `<span class="button-spinner"><span class="spinner-dot" aria-hidden="true"></span><span>${escapeHtml(nextLabel)}</span></span>`;
+  } else {
+    node.classList.remove("is-busy");
+    node.setAttribute("aria-busy", "false");
+    if (node instanceof HTMLButtonElement) {
+      node.disabled = false;
+    }
+    const restore = node.dataset.originalLabel;
+    if (restore !== undefined) {
+      node.textContent = restore;
+      delete node.dataset.originalLabel;
+    }
+  }
 }
 
 function setActivePage(page) {
@@ -536,6 +1144,8 @@ function setActiveHistoryTab(tab) {
       ? "Review the selected plan year month by month, then switch to baseline mix when you need the fallback product split."
       : tab === "baseline"
         ? "Review the fallback product split from the selected baseline window, then switch back to the monthly plan when needed."
+        : tab === "sku-sales"
+          ? "Review listing-level SKU sales and virtual bundle gross without storing raw order files."
         : tab === "trends"
           ? "Review actual performance by year without making the planning page much longer."
           : "Use a proxy launch curve and committed units to sanity-check new product sends.";
@@ -586,15 +1196,17 @@ function defaultPlannerSettings() {
     global: {
       defaultExpiryMonths: 24,
       defaultLeadTimeDays: 8,
+      safetyStockWeeksH1: 3,
+      safetyStockWeeksH2: 5,
     },
     products: {
-      "Birria Bomb 2-Pack": { cogs: 3.1, moq: 0, casePack: 24, shelfLife: 24 },
-      "Chile Colorado Bomb 2-Pack": { cogs: 3.95, moq: 0, casePack: 24, shelfLife: 24 },
-      "Pozole Bomb 2-Pack": { cogs: 3.05, moq: 0, casePack: 24, shelfLife: 24 },
-      "Pozole Verde Bomb 2-Pack": { cogs: 3.75, moq: 0, casePack: 24, shelfLife: 24 },
-      "Tinga Bomb 2-Pack": { cogs: 3.15, moq: 0, casePack: 24, shelfLife: 24 },
-      "Brine Bomb": { cogs: 4.2, moq: 0, casePack: 24, shelfLife: 24 },
-      "Variety Pack": { cogs: 13.35, moq: 0, casePack: 4, shelfLife: 24 },
+      "Birria Bomb 2-Pack": { cogs: 3.1, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
+      "Chile Colorado Bomb 2-Pack": { cogs: 3.95, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
+      "Pozole Bomb 2-Pack": { cogs: 3.05, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
+      "Pozole Verde Bomb 2-Pack": { cogs: 3.75, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
+      "Tinga Bomb 2-Pack": { cogs: 3.15, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
+      "Brine Bomb": { cogs: 4.2, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
+      "Variety Pack": { cogs: 13.35, moq: 0, casePack: 4, shelfLife: 24, safetyStockWeeksOverride: 0 },
     },
   };
 }
@@ -608,10 +1220,12 @@ function normalizePlannerSettings(settings) {
     global: {
       defaultExpiryMonths: Math.max(1, Number(global.defaultExpiryMonths) || defaults.global.defaultExpiryMonths),
       defaultLeadTimeDays: Math.max(1, Number(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
+      safetyStockWeeksH1: Math.max(0, Number(global.safetyStockWeeksH1) || defaults.global.safetyStockWeeksH1),
+      safetyStockWeeksH2: Math.max(0, Number(global.safetyStockWeeksH2) || defaults.global.safetyStockWeeksH2),
     },
     products: Object.fromEntries(CORE_PRODUCTS.map((product) => {
       const sourceProduct = products[product] && typeof products[product] === "object" ? products[product] : {};
-      const defaultProduct = defaults.products[product] || { cogs: 0, moq: 0, casePack: 1, shelfLife: defaults.global.defaultExpiryMonths };
+      const defaultProduct = defaults.products[product] || { cogs: 0, moq: 0, casePack: 1, shelfLife: defaults.global.defaultExpiryMonths, safetyStockWeeksOverride: 0 };
       return [
         product,
         {
@@ -619,6 +1233,7 @@ function normalizePlannerSettings(settings) {
           moq: Math.max(0, Number(sourceProduct.moq) || 0),
           casePack: Math.max(1, Number(sourceProduct.casePack) || defaultProduct.casePack),
           shelfLife: Math.max(1, Number(sourceProduct.shelfLife) || defaultProduct.shelfLife),
+          safetyStockWeeksOverride: Math.max(0, Number(sourceProduct.safetyStockWeeksOverride) || defaultProduct.safetyStockWeeksOverride || 0),
         },
       ];
     })),
@@ -630,15 +1245,18 @@ function renderPlannerSettings(settings) {
   const normalized = normalizePlannerSettings(settings);
   globalSettingsForm.elements["defaultExpiryMonths"].value = String(normalized.global.defaultExpiryMonths);
   globalSettingsForm.elements["defaultLeadTimeDays"].value = String(normalized.global.defaultLeadTimeDays);
+  globalSettingsForm.elements["safetyStockWeeksH1"].value = String(normalized.global.safetyStockWeeksH1);
+  globalSettingsForm.elements["safetyStockWeeksH2"].value = String(normalized.global.safetyStockWeeksH2);
   productSettingsBody.innerHTML = CORE_PRODUCTS.map((product) => {
     const productSettings = normalized.products[product];
     return `
       <tr>
-        <td class="text-left">${product}</td>
+        <td class="text-left">${escapeHtml(displayProductName(product))}</td>
         <td><input type="number" step="0.01" data-setting-product="${product}" data-setting-key="cogs" value="${productSettings.cogs}"></td>
         <td><input type="number" step="1" data-setting-product="${product}" data-setting-key="moq" value="${productSettings.moq}"></td>
         <td><input type="number" step="1" data-setting-product="${product}" data-setting-key="casePack" value="${productSettings.casePack}"></td>
         <td><input type="number" step="1" data-setting-product="${product}" data-setting-key="shelfLife" value="${productSettings.shelfLife}"></td>
+        <td><input type="number" step="0.5" min="0" max="26" data-setting-product="${product}" data-setting-key="safetyStockWeeksOverride" value="${productSettings.safetyStockWeeksOverride || 0}"></td>
       </tr>
     `;
   }).join("");
@@ -650,6 +1268,8 @@ function readPlannerSettingsForm() {
     global: {
       defaultExpiryMonths: Math.max(1, Number(globalSettingsForm?.elements?.defaultExpiryMonths?.value) || defaults.global.defaultExpiryMonths),
       defaultLeadTimeDays: Math.max(1, Number(globalSettingsForm?.elements?.defaultLeadTimeDays?.value) || defaults.global.defaultLeadTimeDays),
+      safetyStockWeeksH1: Math.max(0, Number(globalSettingsForm?.elements?.safetyStockWeeksH1?.value) || defaults.global.safetyStockWeeksH1),
+      safetyStockWeeksH2: Math.max(0, Number(globalSettingsForm?.elements?.safetyStockWeeksH2?.value) || defaults.global.safetyStockWeeksH2),
     },
     products: {},
   };
@@ -704,8 +1324,48 @@ function getMonthlyActuals(monthKey) {
   return monthlyActuals?.[monthKey] || null;
 }
 
+function parseDateParts(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  // YYYY-MM-DD
+  let match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return { year, month, day };
+  }
+  // MM/DD/YYYY or M/D/YY
+  match = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (match) {
+    const month = Number(match[1]);
+    const day = Number(match[2]);
+    let year = Number(match[3]);
+    if (year < 100) year += 2000;
+    if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return { year, month, day };
+  }
+  return null;
+}
+
+function toIsoDate(value) {
+  const parts = parseDateParts(value);
+  if (!parts) return "";
+  const lastDay = new Date(parts.year, parts.month, 0).getDate();
+  const safeDay = Math.min(parts.day, lastDay);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(safeDay).padStart(2, "0")}`;
+}
+
+function toUsDate(value) {
+  const parts = parseDateParts(value);
+  if (!parts) return String(value || "");
+  return `${String(parts.month).padStart(2, "0")}/${String(parts.day).padStart(2, "0")}/${parts.year}`;
+}
+
 function monthKeyFromDate(value) {
-  return value ? String(value).slice(0, 7) : "";
+  const iso = toIsoDate(value);
+  return iso ? iso.slice(0, 7) : "";
 }
 
 function monthLabelFromKey(monthKey) {
@@ -715,12 +1375,262 @@ function monthLabelFromKey(monthKey) {
 }
 
 function safeShiftDateToYear(value, year) {
-  if (!value) return "";
-  const [oldYear, month, day] = String(value).split("-").map(Number);
-  if (!oldYear || !month || !day) return value;
+  const iso = toIsoDate(value);
+  if (!iso) return value ? String(value) : "";
+  const [, month, day] = iso.split("-").map(Number);
+  if (!month || !day) return value ? String(value) : "";
   const lastDay = new Date(year, month, 0).getDate();
   const nextDay = Math.min(day, lastDay);
-  return `${year}-${String(month).padStart(2, "0")}-${String(nextDay).padStart(2, "0")}`;
+  return toUsDate(`${year}-${String(month).padStart(2, "0")}-${String(nextDay).padStart(2, "0")}`);
+}
+
+let datePopoverEl = null;
+let datePopoverInput = null;
+let datePopoverYear = null;
+let datePopoverMonth = null; // 1-12
+
+function ensureDatePopover() {
+  if (datePopoverEl) return datePopoverEl;
+  const el = document.createElement("div");
+  el.className = "date-popover";
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="date-popover-header">
+      <button type="button" class="date-nav" data-date-nav="prev" aria-label="Previous month">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.5 19a1 1 0 0 1-.7-.3l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 1 1 1.4 1.4L10.9 12l5.3 5.3A1 1 0 0 1 15.5 19Z"/></svg>
+      </button>
+      <div class="date-popover-controls" aria-label="Calendar month and year">
+        <select class="date-popover-month" data-date-month aria-label="Month"></select>
+        <input class="date-popover-year" data-date-year type="number" inputmode="numeric" step="1" min="2020" max="2036" aria-label="Year">
+      </div>
+      <button type="button" class="date-nav" data-date-nav="next" aria-label="Next month">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8.5 19a1 1 0 0 1-.7-1.7l5.3-5.3-5.3-5.3a1 1 0 1 1 1.4-1.4l6 6a1 1 0 0 1 0 1.4l-6 6a1 1 0 0 1-.7.3Z"/></svg>
+      </button>
+    </div>
+    <div class="date-weekdays" aria-hidden="true">
+      <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+    </div>
+    <div class="date-grid" data-date-grid></div>
+    <div class="date-popover-footer">
+      <button type="button" class="date-footer-btn" data-date-action="clear">Clear</button>
+      <button type="button" class="date-footer-btn" data-date-action="today">Today</button>
+    </div>
+  `;
+  document.body.appendChild(el);
+
+  el.addEventListener("mousedown", (event) => {
+    const target = event.target;
+    // Prevent focus loss races when clicking inside the popover, but allow interacting
+    // with the month/year controls.
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return;
+    event.preventDefault();
+  });
+
+  const monthSelect = el.querySelector("[data-date-month]");
+  if (monthSelect instanceof HTMLSelectElement) {
+    monthSelect.innerHTML = MONTH_LABELS.map((label, idx) => `<option value="${idx + 1}">${escapeHtml(label)}</option>`).join("");
+    monthSelect.addEventListener("change", () => {
+      const nextMonth = Number(monthSelect.value || 0);
+      if (!datePopoverYear || !Number.isFinite(nextMonth) || nextMonth < 1 || nextMonth > 12) return;
+      datePopoverMonth = nextMonth;
+      renderDatePopover();
+    });
+  }
+  const yearInput = el.querySelector("[data-date-year]");
+  if (yearInput instanceof HTMLInputElement) {
+    yearInput.addEventListener("change", () => {
+      const nextYear = Number(yearInput.value || 0);
+      if (!Number.isFinite(nextYear) || nextYear < 1900 || nextYear > 2200) return;
+      datePopoverYear = Math.round(nextYear);
+      renderDatePopover();
+    });
+  }
+
+  el.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const dayButton = target.closest("button[data-date-value]");
+    if (dayButton instanceof HTMLButtonElement) {
+      const iso = String(dayButton.dataset.dateValue || "");
+      if (datePopoverInput) {
+        datePopoverInput.value = iso ? toUsDate(iso) : "";
+        datePopoverInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      closeDatePopover();
+      return;
+    }
+    const nav = target.closest("button[data-date-nav]");
+    if (nav instanceof HTMLButtonElement) {
+      const dir = String(nav.dataset.dateNav || "");
+      shiftDatePopoverMonth(dir === "prev" ? -1 : 1);
+      return;
+    }
+    const action = target.closest("button[data-date-action]");
+    if (action instanceof HTMLButtonElement) {
+      const kind = String(action.dataset.dateAction || "");
+      if (kind === "clear" && datePopoverInput) {
+        datePopoverInput.value = "";
+        datePopoverInput.dispatchEvent(new Event("change", { bubbles: true }));
+        closeDatePopover();
+      }
+      if (kind === "today" && datePopoverInput) {
+        const now = new Date();
+        const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        datePopoverInput.value = toUsDate(iso);
+        datePopoverInput.dispatchEvent(new Event("change", { bubbles: true }));
+        closeDatePopover();
+      }
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDatePopover();
+  });
+
+  document.addEventListener("mousedown", (event) => {
+    if (!datePopoverEl || datePopoverEl.hidden) return;
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (datePopoverEl.contains(target)) return;
+    if (datePopoverInput && datePopoverInput.closest(".date-field-wrap")?.contains(target)) return;
+    closeDatePopover();
+  });
+
+  window.addEventListener("resize", () => {
+    if (datePopoverEl && !datePopoverEl.hidden && datePopoverInput) {
+      positionDatePopover(datePopoverInput);
+    }
+  });
+
+  window.addEventListener("scroll", () => {
+    // Keep it simple: close on scroll so it doesn't drift.
+    if (datePopoverEl && !datePopoverEl.hidden) closeDatePopover();
+  }, true);
+
+  datePopoverEl = el;
+  return el;
+}
+
+function shiftDatePopoverMonth(delta) {
+  if (!datePopoverYear || !datePopoverMonth) return;
+  const cursor = new Date(datePopoverYear, datePopoverMonth - 1, 1);
+  cursor.setMonth(cursor.getMonth() + delta);
+  datePopoverYear = cursor.getFullYear();
+  datePopoverMonth = cursor.getMonth() + 1;
+  renderDatePopover();
+}
+
+function renderDatePopover() {
+  if (!datePopoverEl || !datePopoverYear || !datePopoverMonth) return;
+  const monthSelect = datePopoverEl.querySelector("[data-date-month]");
+  if (monthSelect instanceof HTMLSelectElement) {
+    monthSelect.value = String(datePopoverMonth);
+  }
+  const yearInput = datePopoverEl.querySelector("[data-date-year]");
+  if (yearInput instanceof HTMLInputElement) {
+    yearInput.value = String(datePopoverYear);
+  }
+
+  const grid = datePopoverEl.querySelector("[data-date-grid]");
+  if (!grid) return;
+  const first = new Date(datePopoverYear, datePopoverMonth - 1, 1);
+  const startWeekday = first.getDay(); // 0=Su
+  const daysInMonth = new Date(datePopoverYear, datePopoverMonth, 0).getDate();
+  const daysInPrev = new Date(datePopoverYear, datePopoverMonth - 1, 0).getDate();
+  const selectedIso = datePopoverInput ? toIsoDate(datePopoverInput.value) : "";
+  const today = new Date();
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+  const cells = [];
+  for (let idx = 0; idx < 42; idx += 1) {
+    const offset = idx - startWeekday;
+    let y = datePopoverYear;
+    let m = datePopoverMonth;
+    let d = offset + 1;
+    let outside = false;
+    if (d < 1) {
+      outside = true;
+      const prev = new Date(datePopoverYear, datePopoverMonth - 2, 1);
+      y = prev.getFullYear();
+      m = prev.getMonth() + 1;
+      d = daysInPrev + d;
+    } else if (d > daysInMonth) {
+      outside = true;
+      const next = new Date(datePopoverYear, datePopoverMonth, 1);
+      y = next.getFullYear();
+      m = next.getMonth() + 1;
+      d = d - daysInMonth;
+    }
+    const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const classes = [
+      "date-day",
+      outside ? "is-outside" : "",
+      iso === selectedIso ? "is-selected" : "",
+      iso === todayIso ? "is-today" : "",
+    ].filter(Boolean).join(" ");
+    cells.push(`<button type="button" class="${classes}" data-date-value="${iso}">${d}</button>`);
+  }
+  grid.innerHTML = cells.join("");
+}
+
+function positionDatePopover(input) {
+  const el = ensureDatePopover();
+  const rect = input.getBoundingClientRect();
+  const gap = 8;
+  const width = 292;
+  const height = 340;
+  let left = rect.left;
+  let top = rect.bottom + gap;
+  if (left + width > window.innerWidth - 10) left = window.innerWidth - width - 10;
+  if (left < 10) left = 10;
+  if (top + height > window.innerHeight - 10) top = rect.top - height - gap;
+  if (top < 10) top = 10;
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+}
+
+function openDatePopover(input) {
+  const el = ensureDatePopover();
+  datePopoverInput = input;
+  const iso = toIsoDate(input.value) || (() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  })();
+  const parts = parseDateParts(iso);
+  datePopoverYear = parts?.year || new Date().getFullYear();
+  datePopoverMonth = parts?.month || (new Date().getMonth() + 1);
+  renderDatePopover();
+  positionDatePopover(input);
+  el.hidden = false;
+}
+
+function closeDatePopover() {
+  if (!datePopoverEl) return;
+  datePopoverEl.hidden = true;
+  datePopoverInput = null;
+  datePopoverYear = null;
+  datePopoverMonth = null;
+}
+
+function setupDatePickers() {
+  const inputs = Array.from(document.querySelectorAll('input[data-date-picker]'));
+  inputs.forEach((input) => {
+    if (!(input instanceof HTMLInputElement)) return;
+    const wrap = input.closest(".date-field-wrap");
+    const trigger = wrap ? wrap.querySelector("button[data-date-trigger]") : null;
+    const open = () => openDatePopover(input);
+    input.addEventListener("focus", open);
+    trigger?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      open();
+      input.focus();
+    });
+    input.addEventListener("blur", () => {
+      const iso = toIsoDate(input.value);
+      if (iso) input.value = toUsDate(iso);
+    });
+  });
 }
 
 function buildPlanningYears(summary = {}) {
@@ -826,7 +1736,7 @@ function renderForecastProductMixInputs(setting, options = {}) {
   forecastProductMixInputs.innerHTML = CORE_PRODUCTS.map((product) => `
     <label class="forecast-product-field ${hasSavedMix ? "is-saved" : ""} ${readOnly ? "is-readonly" : ""}">
       <span class="forecast-product-label">
-        <strong>${product}</strong>
+        <strong>${escapeHtml(displayProductName(product))}</strong>
         <small>${actualMix?.[product] !== undefined ? `${options.actualMixLabel || "Reference"} ${number(actualMix[product])}%` : "No reference mix loaded yet"}</small>
       </span>
       <input type="number" data-product-mix="${product}" value="${Number(mix[product] || 0).toFixed(1).replace(/\\.0$/, "")}" step="0.1" ${readOnly ? "disabled" : ""}>
@@ -868,7 +1778,7 @@ function renderForecastSummary() {
     .sort((a, b) => b[1] - a[1]);
   forecastSummaryList.innerHTML = [
     `<span class="forecast-summary-pill">${isEditableForecastMonth(monthKey) ? `Plan ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%` : "Actual month mix"}</span>`,
-    ...sortedMix.map(([product, value]) => `<span class="forecast-summary-pill">${product.replace(" Bomb 2-Pack", "").replace(" Bomb", "")} ${number(value)}%</span>`),
+    ...sortedMix.map(([product, value]) => `<span class="forecast-summary-pill">${escapeHtml(displayProductName(product).replace(" Bomb 2P", "").replace(" Bomb", ""))} ${number(value)}%</span>`),
   ].join("");
 }
 
@@ -959,8 +1869,13 @@ function renderSummary(summary, hasInventory) {
   const inventoryLabel = hasInventory
     ? `Live sheet${summary.inventory_as_of ? ` (${summary.inventory_as_of})` : ""}`
     : "Template only";
-  const sourceLabel = summary.data_source === "live" ? "Live Firestore" : "Hosted snapshot";
-  const dataAsOfLabel = summary.data_as_of || summary.date_end || "—";
+  const sourceLabel =
+    summary.data_source === "live"
+      ? "Live Firestore"
+      : summary.data_source === "local"
+        ? "Local lean snapshot"
+        : "Hosted snapshot";
+  const dataAsOfLabel = summary.data_as_of || summary.date_end || "-";
   const sourceDetail = summary.data_source_detail || "";
   summaryBlock.innerHTML = `
     <dl class="summary-list">
@@ -986,10 +1901,10 @@ function applyDefaults(defaults) {
   sharedPlannerSettings = normalizePlannerSettings(defaults.sharedSettings || sharedPlannerSettings || defaultPlannerSettings());
   forecastYear = defaults.forecastYear || forecastYear;
   if (planningYearInput) planningYearInput.value = String(forecastYear);
-  document.getElementById("baseline-start").value = defaults.baselineStart || "";
-  document.getElementById("baseline-end").value = defaults.baselineEnd || "";
-  document.getElementById("horizon-start").value = defaults.horizonStart || "";
-  document.getElementById("horizon-end").value = defaults.horizonEnd || "";
+  document.getElementById("baseline-start").value = defaults.baselineStart ? toUsDate(defaults.baselineStart) : "";
+  document.getElementById("baseline-end").value = defaults.baselineEnd ? toUsDate(defaults.baselineEnd) : "";
+  document.getElementById("horizon-start").value = defaults.horizonStart ? toUsDate(defaults.horizonStart) : "";
+  document.getElementById("horizon-end").value = defaults.horizonEnd ? toUsDate(defaults.horizonEnd) : "";
   document.getElementById("uplift-pct").value = defaults.upliftPct ?? 0;
   document.getElementById("lead-time-days").value = defaults.leadTimeDays ?? 8;
   const excludeSpikesInput = document.getElementById("exclude-spikes");
@@ -1002,7 +1917,7 @@ function applyDefaults(defaults) {
 
 function renderResults(payload) {
   latestPlanPayload = payload;
-  const rows = payload.rows || [];
+  const rows = sortRowsByProductName(payload.rows || []);
   const summary = payload.summary || {};
   const salesOnly = document.getElementById("velocity-mode").value === "sales_only";
   const columns = salesOnly
@@ -1014,6 +1929,7 @@ function renderResults(payload) {
         ["Smoothed units", "smoothed_units_in_baseline"],
           ["Baseline unit mix %", "mix_pct"],
         ["Gross sales", "gross_sales_in_baseline"],
+        ["Net gross (est.)", "net_gross_sales_in_baseline"],
         ["On hand", "on_hand"],
         ["In transit", "in_transit"],
         ["Transit start", "transit_started_on"],
@@ -1039,6 +1955,7 @@ function renderResults(payload) {
         ["Units used", "units_used_for_velocity"],
         ["Days used", "days_used_for_velocity"],
         ["Gross sales", "gross_sales_in_baseline"],
+        ["Net gross (est.)", "net_gross_sales_in_baseline"],
         ["On hand", "on_hand"],
         ["In transit", "in_transit"],
         ["Transit start", "transit_started_on"],
@@ -1054,19 +1971,20 @@ function renderResults(payload) {
         ["Capital needed", "capital_required"],
       ];
   resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
-  resultSummary.innerHTML = `
-    <span>Critical ${summary.critical_on_hand || 0}</span>
-    <span>Urgent ${summary.urgent || 0}</span>
-    <span>Transit gap ${summary.transit_gap || 0}</span>
-    <span>Watch ${summary.watch || 0}</span>
-    <span>Healthy ${summary.healthy || 0}</span>
-    <span>Spoilage ${summary.spoilage_risk || 0}</span>
-    ${inventoryUploaded ? "" : "<span>No inventory uploaded yet</span>"}
-  `;
+  resultSummary.innerHTML = [
+    `<span class="summary-pill summary-pill-critical">Critical ${summary.critical_on_hand || 0}</span>`,
+    `<span class="summary-pill summary-pill-urgent">Urgent ${summary.urgent || 0}</span>`,
+    `<span class="summary-pill summary-pill-transit">Transit gap ${summary.transit_gap || 0}</span>`,
+    `<span class="summary-pill summary-pill-watch">Watch ${summary.watch || 0}</span>`,
+    `<span class="summary-pill summary-pill-healthy">Healthy ${summary.healthy || 0}</span>`,
+    `<span class="summary-pill summary-pill-spoilage">Spoilage ${summary.spoilage_risk || 0}</span>`,
+    inventoryUploaded ? "" : `<span class="summary-pill summary-pill-muted">No inventory uploaded yet</span>`,
+  ].filter(Boolean).join("");
   if (!rows.length) {
     resultsBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">No planning rows matched the current inputs.</td></tr>`;
     renderMonthlyPlan(payload.monthlyPlan || { months: [], rows: [] });
     renderProductMix(payload.productMix || { rows: [], totals: {} });
+    renderSkuSalesSummary(payload.skuSalesSummary || { rows: [], sourceRows: 0 });
     renderHistoricalTrend(payload.historicalTrend || { years: [], monthlyTotals: [], productMonthly: [], yoyByMonth: [] }, payload.monthlyPlan?.year || forecastYear);
     renderLaunchPlanning(payload.launchPlanning || { rows: [] });
     return;
@@ -1077,6 +1995,7 @@ function renderResults(payload) {
       "sample_units_in_baseline",
       "units_used_for_velocity",
       "gross_sales_in_baseline",
+      "net_gross_sales_in_baseline",
       "on_hand",
       "in_transit",
       "current_supply_units",
@@ -1090,17 +2009,25 @@ function renderResults(payload) {
   }, {});
   const renderCell = (key, row) => {
     if (key === "status") return `<span class="status status-${String(row.status || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}">${row.status || ""}</span>`;
-    if (key === "gross_sales_in_baseline" || key === "capital_required") return money(row[key]);
+    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required") return money(row[key]);
     if (key === "mix_pct") return percent(row[key]);
-    if (key === "safety_stock_units") return `${number(row[key])} (${number(row.safety_stock_weeks)} wks)`;
-    if (["product_name", "projected_stockout_date", "reorder_date", "transit_eta", "transit_started_on"].includes(key)) return row[key] || "";
+    if (key === "safety_stock_units") {
+      return `
+        <span class="cell-split">
+          <span class="cell-split-main">${escapeHtml(number(row[key]))}</span>
+          <span class="cell-split-meta">(${escapeHtml(number(row.safety_stock_weeks))} wks)</span>
+        </span>
+      `.trim();
+    }
+    if (key === "product_name") return displayProductName(row[key] || "");
+    if (["projected_stockout_date", "reorder_date", "transit_eta", "transit_started_on"].includes(key)) return humanDate(row[key] || "");
     return number(row[key]);
   };
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => `<td>${renderCell(key, row)}</td>`).join("")}</tr>`).join("");
   const totalCell = (key) => {
     if (key === "product_name") return "Totals";
     if (key === "mix_pct") return "100%";
-    if (key === "gross_sales_in_baseline" || key === "capital_required") return money(totals[key] || 0);
+    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required") return money(totals[key] || 0);
     if (["sales_units_in_baseline", "smoothed_units_in_baseline", "sample_units_in_baseline", "units_used_for_velocity", "days_used_for_velocity", "on_hand", "in_transit", "current_supply_units", "recommended_order_units"].includes(key)) {
       return number(totals[key] || 0);
     }
@@ -1111,6 +2038,7 @@ function renderResults(payload) {
   resultsBody.innerHTML = `${bodyRows}${totalsRow}`;
   renderMonthlyPlan(payload.monthlyPlan || { months: [], rows: [] });
   renderProductMix(payload.productMix || { rows: [], totals: {} });
+  renderSkuSalesSummary(payload.skuSalesSummary || { rows: [], sourceRows: 0 });
   renderHistoricalTrend(payload.historicalTrend || { years: [], monthlyTotals: [], productMonthly: [], yoyByMonth: [] }, payload.monthlyPlan?.year || forecastYear);
   renderLaunchPlanning(payload.launchPlanning || { rows: [] });
 }
@@ -1159,7 +2087,7 @@ function renderMonthlyPlanHeaderCell(month) {
 
 function renderMonthlyPlan(payload) {
   const months = payload.months || [];
-  const rows = payload.rows || [];
+  const rows = sortRowsByProductName(payload.rows || []);
   const year = payload.year || forecastYear;
   const actualMonths = months.filter((month) => month.mode === "actual").map((month) => month.label);
   const actualMtdMonth = months.find((month) => month.mode === "actual_mtd");
@@ -1208,7 +2136,7 @@ function renderMonthlyPlan(payload) {
   }, {});
   const monthTotals = Object.fromEntries(monthKeys.map((key) => [key, Number(totals[key] || 0)]));
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => {
-    if (key === "product_name") return `<td>${row[key] || ""}</td>`;
+    if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
     if (key === "year_mix_pct") return `<td>${percent(row[key])}</td>`;
     if (monthKeys.includes(key)) {
       const value = Number(row[key] || 0);
@@ -1243,13 +2171,14 @@ function renderMonthlyPlan(payload) {
 }
 
 function renderProductMix(payload) {
-  const rows = payload.rows || [];
+  const rows = sortRowsByProductName(payload.rows || []);
   const columns = [
     ["Product", "product_name"],
     ["Units in baseline window", "baseline_units"],
     ["Baseline unit share %", "mix_pct"],
     ["Baseline sales share %", "sales_mix_pct"],
     ["Gross sales in baseline window", "gross_sales_in_baseline"],
+    ["Net gross (est.) in baseline window", "net_gross_sales_in_baseline"],
     ["Unit COGS", "unit_cogs"],
     ["Estimated COGS", "estimated_cogs"],
     ["Planned units", "forecast_units"],
@@ -1260,17 +2189,17 @@ function renderProductMix(payload) {
     return;
   }
   const totals = rows.reduce((acc, row) => {
-    ["baseline_units", "gross_sales_in_baseline", "estimated_cogs", "forecast_units"].forEach((key) => {
+    ["baseline_units", "gross_sales_in_baseline", "net_gross_sales_in_baseline", "estimated_cogs", "forecast_units"].forEach((key) => {
       acc[key] = (acc[key] || 0) + Number(row[key] || 0);
     });
     return acc;
   }, {});
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => {
-    if (key === "product_name") return `<td>${row[key] || row.name || "—"}</td>`;
+    if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || row.name || "—"))}</td>`;
     if (key === "mix_pct" || key === "sales_mix_pct") return `<td>${percent(row[key])}</td>`;
     if (key === "unit_cogs") return `<td>${moneyPrecise(row[key])}</td>`;
     if (key === "estimated_cogs") return `<td>${money(row[key])}</td>`;
-    if (key === "gross_sales_in_baseline") return `<td>${money(row[key])}</td>`;
+    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline") return `<td>${money(row[key])}</td>`;
     return `<td>${number(row[key])}</td>`;
   }).join("")}</tr>`).join("");
   const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => {
@@ -1278,16 +2207,53 @@ function renderProductMix(payload) {
     if (key === "mix_pct" || key === "sales_mix_pct") return "<td>100%</td>";
     if (key === "unit_cogs") return "<td>—</td>";
     if (key === "estimated_cogs") return `<td>${money(totals[key])}</td>`;
-    if (key === "gross_sales_in_baseline") return `<td>${money(totals[key])}</td>`;
+    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline") return `<td>${money(totals[key])}</td>`;
     return `<td>${number(totals[key])}</td>`;
   }).join("")}</tr>`;
   productMixBody.innerHTML = `${bodyRows}${totalsRow}`;
 }
 
+function renderSkuSalesSummary(payload) {
+  const rows = sortRowsByProductName(payload.rows || []);
+  const columns = [
+    ["Type", "sku_type"],
+    ["SKU", "sku_id"],
+    ["Listing", "product_name"],
+    ["Mapped core products", "core_products"],
+    ["Units sold", "units_sold"],
+    ["Gross sales", "gross_sales"],
+    ["Net gross (est.)", "net_gross_sales"],
+    ["Avg gross / unit", "avg_gross_per_unit"],
+    ["Avg net gross / unit", "avg_net_gross_per_unit"],
+  ];
+  if (!skuSalesHead || !skuSalesBody) return;
+  skuSalesHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
+  if (!rows.length) {
+    const hasSourceRows = Number(payload.sourceRows || 0) > 0;
+    skuSalesBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">${hasSourceRows ? "No SKU rows matched the selected baseline window." : "SKU sales summary will appear after orders are re-uploaded with the SKU mapping."}</td></tr>`;
+    return;
+  }
+  const totals = rows.reduce((acc, row) => {
+    acc.units_sold += Number(row.units_sold || 0);
+    acc.gross_sales += Number(row.gross_sales || 0);
+    acc.net_gross_sales += Number(row.net_gross_sales || 0);
+    return acc;
+  }, { units_sold: 0, gross_sales: 0, net_gross_sales: 0 });
+  const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => {
+    if (key === "sku_type") return `<td>${row[key] === "virtual_bundle" ? "Virtual bundle" : "Core"}</td>`;
+    if (key === "gross_sales" || key === "net_gross_sales" || key === "avg_gross_per_unit" || key === "avg_net_gross_per_unit") return `<td>${money(row[key])}</td>`;
+    if (key === "units_sold") return `<td>${number(row[key])}</td>`;
+    if (key === "product_name" || key === "core_products") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
+    return `<td>${escapeHtml(row[key] || "")}</td>`;
+  }).join("")}</tr>`).join("");
+  const totalsRow = `<tr class="totals-row"><td>Totals</td><td></td><td></td><td></td><td>${number(totals.units_sold)}</td><td>${money(totals.gross_sales)}</td><td>${money(totals.net_gross_sales)}</td><td>${money(totals.units_sold > 0 ? totals.gross_sales / totals.units_sold : 0)}</td><td>${money(totals.units_sold > 0 ? totals.net_gross_sales / totals.units_sold : 0)}</td></tr>`;
+  skuSalesBody.innerHTML = `${bodyRows}${totalsRow}`;
+}
+
 function renderHistoricalTrend(payload, focusYear) {
   const years = payload.years || [];
   const monthlyTotals = payload.monthlyTotals || [];
-  const productMonthly = payload.productMonthly || [];
+  const productMonthly = sortRowsByProductName(payload.productMonthly || []);
   const yoyByMonth = payload.yoyByMonth || [];
   if (historicalTrendCopy) {
     historicalTrendCopy.textContent = years.length
@@ -1319,7 +2285,7 @@ function renderHistoricalTrend(payload, focusYear) {
     historicalProductsBody.innerHTML = `<tr><td colspan="${productColumns.length}" class="empty">No product history loaded yet.</td></tr>`;
   } else {
     historicalProductsBody.innerHTML = productMonthly.map((row) => `<tr>${productColumns.map(([, key]) => {
-      if (key === "product_name") return `<td>${row[key] || ""}</td>`;
+      if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
       return `<td>${number(row[key])}</td>`;
     }).join("")}</tr>`).join("");
   }
@@ -1338,7 +2304,7 @@ function renderHistoricalTrend(payload, focusYear) {
 }
 
 function renderLaunchPlanning(payload) {
-  const rows = payload?.rows || [];
+  const rows = sortRowsByProductName(payload?.rows || []);
   if (launchPlanningCopy) {
     launchPlanningCopy.textContent = rows.length
       ? "Use the proxy launch curve to compare what you already sent versus low, base, and high demand cases."
@@ -1359,7 +2325,9 @@ function renderLaunchPlanning(payload) {
     launchReferenceBody.innerHTML = `<tr><td colspan="${referenceColumns.length}" class="empty">Run planning to load launch references.</td></tr>`;
   } else {
     launchReferenceBody.innerHTML = rows.map((row) => `<tr>${referenceColumns.map(([, key]) => {
-      if (["product_name", "launch_date", "proxy_product_name"].includes(key)) return `<td>${row[key] || "—"}</td>`;
+      if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
+      if (key === "proxy_product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
+      if (key === "launch_date") return `<td>${escapeHtml(row[key] || "—")}</td>`;
       return `<td>${number(row[key])}</td>`;
     }).join("")}</tr>`).join("");
   }
@@ -1382,7 +2350,7 @@ function renderLaunchPlanning(payload) {
     return;
   }
   launchScenariosBody.innerHTML = rows.map((row) => `<tr>${scenarioColumns.map(([, key]) => {
-    if (key === "product_name") return `<td>${row[key] || ""}</td>`;
+    if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
     if (key === "launch_cover_weeks_target" || key.endsWith("weeks_of_cover")) return `<td>${row[key] === null || row[key] === undefined ? "—" : number(row[key])}</td>`;
     return `<td>${number(row[key])}</td>`;
   }).join("")}</tr>`).join("");
@@ -2298,53 +3266,54 @@ function renderKpis(payload) {
 }
 
 async function runPlanningFromForm(showStatus = true) {
-  const formData = new FormData(planForm);
-  const payload = Object.fromEntries(formData.entries());
-  const excludeSpikesInput = document.getElementById("exclude-spikes");
-  const monthKey = getSelectedPlanningMonthKey();
-  const activeSetting = getForecastSetting(monthKey, { persist: false });
-  payload.planningYear = Number(planningYearInput?.value || forecastYear || new Date().getFullYear());
-  payload.upliftPct = activeSetting.upliftPct;
-  payload.excludeSpikes = excludeSpikesInput?.checked ?? true;
-  payload.monthlyForecastSettings = Object.fromEntries(
-    Object.entries(forecastSettings).filter(([, setting]) => setting && typeof setting === "object"),
-  );
-  payload.monthlyForecastPcts = Object.fromEntries(
-    Object.entries(payload.monthlyForecastSettings).map(([key, setting]) => [key, Number(setting?.upliftPct || 0)]),
-  );
-  payload.customSettings = sharedPlannerSettings || defaultPlannerSettings();
-  const response = await fetch("/api/plan", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const plan = await response.json();
-  if (!response.ok || plan.error) {
-    throw new Error(plan.error || "Planning failed");
+  setButtonBusy(runPlanningBtn, true, "Running...");
+  try {
+    const formData = new FormData(planForm);
+    const payload = Object.fromEntries(formData.entries());
+    ["baselineStart", "baselineEnd", "horizonStart", "horizonEnd"].forEach((key) => {
+      if (payload[key]) payload[key] = toIsoDate(payload[key]) || payload[key];
+    });
+    const excludeSpikesInput = document.getElementById("exclude-spikes");
+    const monthKey = getSelectedPlanningMonthKey();
+    const activeSetting = getForecastSetting(monthKey, { persist: false });
+    payload.planningYear = Number(planningYearInput?.value || forecastYear || new Date().getFullYear());
+    payload.upliftPct = activeSetting.upliftPct;
+    payload.excludeSpikes = excludeSpikesInput?.checked ?? true;
+    payload.monthlyForecastSettings = Object.fromEntries(
+      Object.entries(forecastSettings).filter(([, setting]) => setting && typeof setting === "object"),
+    );
+    payload.monthlyForecastPcts = Object.fromEntries(
+      Object.entries(payload.monthlyForecastSettings).map(([key, setting]) => [key, Number(setting?.upliftPct || 0)]),
+    );
+    payload.customSettings = sharedPlannerSettings || defaultPlannerSettings();
+    payload.marketingConfig = marketingConfigSource === "api" ? marketingConfig : readLocalMarketingConfig();
+    const plan = await fetchJson("/api/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderResults(plan);
+    if (showStatus) setStatus("Planning run complete.");
+  } finally {
+    setButtonBusy(runPlanningBtn, false);
   }
-  renderResults(plan);
-  if (showStatus) setStatus("Planning run complete.");
 }
 
 async function loadKpis() {
   const params = new URLSearchParams({
-    startDate: kpiStartDateInput.value || "",
-    endDate: kpiEndDateInput.value || "",
+    startDate: toIsoDate(kpiStartDateInput.value || ""),
+    endDate: toIsoDate(kpiEndDateInput.value || ""),
     tab: activeKpiTab,
     dateBasis: kpiDateBasisInput.value || "order",
     orderBucket: kpiOrderBucketInput.value || "paid_time",
     sources: currentKpiSources().join(","),
   });
-  const response = await fetch(`/api/tiktok-kpis?${params.toString()}`);
-  const payload = await response.json();
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error || "Could not load TikTok KPIs");
-  }
+  const payload = await fetchJson(`/api/tiktok-kpis?${params.toString()}`);
   kpiOutputInput.value = payload.filters?.output || "analysis_output";
   kpiDateBasisInput.value = payload.filters?.dateBasis || "order";
   kpiOrderBucketInput.value = payload.filters?.orderBucket || "paid_time";
-  kpiStartDateInput.value = payload.filters?.startDate || kpiStartDateInput.value;
-  kpiEndDateInput.value = payload.filters?.endDate || kpiEndDateInput.value;
+  kpiStartDateInput.value = payload.filters?.startDate ? toUsDate(payload.filters.startDate) : kpiStartDateInput.value;
+  kpiEndDateInput.value = payload.filters?.endDate ? toUsDate(payload.filters.endDate) : kpiEndDateInput.value;
   const selectedSources = payload.filters?.selectedSources || ["Sales"];
   Array.from(kpiFilterForm.querySelectorAll('.source-pill input[type="checkbox"]')).forEach((input) => {
     input.checked = selectedSources.includes(input.value);
@@ -2352,14 +3321,182 @@ async function loadKpis() {
   renderKpis(payload);
 }
 
+function previewNonJsonResponse(raw) {
+  const trimmed = String(raw || "").trim();
+  const excerpt = trimmed.replace(/\s+/g, " ").slice(0, 180);
+  if (!excerpt) return "Empty response body.";
+  if (excerpt.toLowerCase().startsWith("<!doctype") || excerpt.toLowerCase().startsWith("<html")) {
+    return "Server returned HTML instead of JSON. This usually means the API route crashed or the dev server is serving an error page.";
+  }
+  return `Server returned non-JSON response: ${excerpt}`;
+}
+
+async function readJsonResponse(response, url) {
+  const raw = await response.text();
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    const where = url ? ` for ${url}` : "";
+    throw new Error(`${previewNonJsonResponse(raw)}${where} (HTTP ${response.status})`);
+  }
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const payload = await readJsonResponse(response, url);
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error || `Request failed (${response.status})`);
+  }
+  return payload;
+}
+
+const settingsAuthDialog = document.getElementById("settings-auth-dialog");
+const settingsAuthForm = document.getElementById("settings-auth-form");
+const settingsAuthPassword = document.getElementById("settings-auth-password");
+const settingsAuthStatus = document.getElementById("settings-auth-status");
+const settingsAuthCancel = document.getElementById("settings-auth-cancel");
+const settingsAuthSubmit = document.getElementById("settings-auth-submit");
+let settingsUnlockResolver = null;
+let settingsUnlockPromise = null;
+
+async function getSettingsAuthStatus() {
+  try {
+    return await fetchJson("/api/settings-auth");
+  } catch {
+    return { enabled: false, authed: true };
+  }
+}
+
+function setSettingsAuthStatus(message, isError = false) {
+  if (!settingsAuthStatus) return;
+  settingsAuthStatus.textContent = message || "";
+  settingsAuthStatus.dataset.error = isError ? "true" : "false";
+}
+
+function openSettingsAuthDialog() {
+  if (!(settingsAuthDialog instanceof HTMLDialogElement)) return false;
+  setSettingsAuthStatus("");
+  settingsAuthDialog.showModal();
+  if (settingsAuthPassword instanceof HTMLInputElement) {
+    settingsAuthPassword.value = "";
+    settingsAuthPassword.focus();
+  }
+  return true;
+}
+
+function closeSettingsAuthDialog() {
+  if (settingsAuthDialog instanceof HTMLDialogElement) {
+    settingsAuthDialog.close();
+  }
+}
+
+function resolveSettingsUnlock(ok) {
+  if (typeof settingsUnlockResolver === "function") {
+    settingsUnlockResolver(Boolean(ok));
+  }
+  settingsUnlockResolver = null;
+  settingsUnlockPromise = null;
+}
+
+async function ensureSettingsUnlocked() {
+  const status = await getSettingsAuthStatus();
+  if (!status?.enabled || status.authed) return true;
+  if (!openSettingsAuthDialog()) return true;
+  if (!settingsUnlockPromise) {
+    settingsUnlockPromise = new Promise((resolve) => {
+      settingsUnlockResolver = resolve;
+    });
+  }
+  return await settingsUnlockPromise;
+}
+
+settingsAuthCancel?.addEventListener("click", () => {
+  closeSettingsAuthDialog();
+  resolveSettingsUnlock(false);
+});
+
+settingsAuthDialog?.addEventListener("close", () => {
+  // Handles Esc key / backdrop close.
+  if (settingsUnlockPromise) {
+    resolveSettingsUnlock(false);
+  }
+});
+
+settingsAuthForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    setButtonBusy(settingsAuthSubmit, true, "Unlocking...");
+    setSettingsAuthStatus("");
+    const password = settingsAuthPassword instanceof HTMLInputElement ? settingsAuthPassword.value : "";
+    await fetchJson("/api/settings-auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    closeSettingsAuthDialog();
+    resolveSettingsUnlock(true);
+  } catch (error) {
+    setSettingsAuthStatus(error.message || "Could not unlock settings.", true);
+  } finally {
+    setButtonBusy(settingsAuthSubmit, false);
+  }
+});
+
+settingsPasswordForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const unlocked = await ensureSettingsUnlocked();
+    if (!unlocked) {
+      setSettingsPasswordStatus("Settings are locked.", true);
+      return;
+    }
+    setSettingsPasswordStatus("");
+    setButtonBusy(changePasswordButton, true, "Updating...");
+
+    const current = settingsCurrentPassword instanceof HTMLInputElement ? settingsCurrentPassword.value : "";
+    const next = settingsNewPassword instanceof HTMLInputElement ? settingsNewPassword.value : "";
+    const confirm = settingsConfirmPassword instanceof HTMLInputElement ? settingsConfirmPassword.value : "";
+
+    if (!current) {
+      setSettingsPasswordStatus("Enter your current password.", true);
+      return;
+    }
+    if (!next || next.length < 6) {
+      setSettingsPasswordStatus("New password must be at least 6 characters.", true);
+      return;
+    }
+    if (next !== confirm) {
+      setSettingsPasswordStatus("New password and confirmation do not match.", true);
+      return;
+    }
+
+    await fetchJson("/api/settings-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentPassword: current, newPassword: next }),
+    });
+
+    if (settingsCurrentPassword instanceof HTMLInputElement) settingsCurrentPassword.value = "";
+    if (settingsNewPassword instanceof HTMLInputElement) settingsNewPassword.value = "";
+    if (settingsConfirmPassword instanceof HTMLInputElement) settingsConfirmPassword.value = "";
+    setSettingsPasswordStatus("Password updated.");
+    setStatus("Settings password updated.");
+  } catch (error) {
+    setSettingsPasswordStatus(error.message || "Could not update password.", true);
+  } finally {
+    setButtonBusy(changePasswordButton, false);
+  }
+});
+
 async function loadWorkspace() {
-  const response = await fetch("/api/bootstrap");
-  const payload = await response.json();
+  const payload = await fetchJson("/api/bootstrap");
   const workspace = payload.workspace || payload;
   inventoryUploaded = Boolean(workspace.inventoryUploaded);
   renderSummary(workspace.summary || {}, inventoryUploaded);
   applyDefaults(workspace.defaults || {});
   applyPlannerVariant(workspace.summary || {});
+  await loadMarketingConfig();
+  await loadSkuMapping();
   const summary = workspace.summary || {};
   if (summary.date_end) {
     const endDate = new Date(summary.date_end);
@@ -2385,40 +3522,22 @@ async function loadWorkspace() {
 }
 
 async function postJson(url, payload) {
-  const response = await fetch(url, {
+  return await fetchJson(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const raw = await response.text();
-  let parsed = {};
-  try {
-    parsed = raw ? JSON.parse(raw) : {};
-  } catch {
-    throw new Error(raw || `Request failed (${response.status})`);
-  }
-  if (!response.ok || parsed.error) throw new Error(parsed.error || `Request failed (${response.status})`);
-  return parsed;
 }
 
 async function postForm(url, form) {
-  const response = await fetch(url, { method: "POST", body: form });
-  const raw = await response.text();
-  let payload = {};
-  try {
-    payload = raw ? JSON.parse(raw) : {};
-  } catch {
-    throw new Error(raw || `Request failed (${response.status})`);
-  }
-  if (!response.ok || payload.error) throw new Error(payload.error || `Request failed (${response.status})`);
-  return payload;
+  return await fetchJson(url, { method: "POST", body: form });
 }
 
 loadSampleBtn.addEventListener("click", async () => {
   try {
+    setButtonBusy(loadSampleBtn, true, "Refreshing...");
     setStatus("Refreshing current data...");
-    const response = await fetch("/api/bootstrap?refresh=1");
-    const payload = await response.json();
+    const payload = await fetchJson("/api/bootstrap?refresh=1");
     const workspace = payload.workspace || payload;
     inventoryUploaded = Boolean(workspace.inventoryUploaded);
     renderSummary(workspace.summary || {}, inventoryUploaded);
@@ -2431,19 +3550,22 @@ loadSampleBtn.addEventListener("click", async () => {
     setStatus("Current data refreshed.");
   } catch (error) {
     setStatus(error.message || "Could not refresh current data.", true);
+  } finally {
+    setButtonBusy(loadSampleBtn, false);
   }
 });
 
 if (updateLiveInventoryBtn) {
   updateLiveInventoryBtn.addEventListener("click", async () => {
     try {
-      updateLiveInventoryBtn.disabled = true;
-      setStatus("Pulling the live inventory sheet and saving it to Firestore...");
-      const response = await fetch("/api/inventory-sync", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error || `Request failed (${response.status})`);
+      const unlocked = await ensureSettingsUnlocked();
+      if (!unlocked) {
+        setStatus("Settings are locked.", true);
+        return;
       }
+      setButtonBusy(updateLiveInventoryBtn, true, "Updating...");
+      setStatus("Pulling the live inventory sheet and saving it to Firestore...");
+      const payload = await fetchJson("/api/inventory-sync", { method: "POST" });
       const workspace = payload.workspace || payload;
       inventoryUploaded = Boolean(workspace.inventoryUploaded);
       renderSummary(workspace.summary || {}, inventoryUploaded);
@@ -2459,7 +3581,7 @@ if (updateLiveInventoryBtn) {
     } catch (error) {
       setStatus(error.message || "Could not update live inventory from the sheet.", true);
     } finally {
-      updateLiveInventoryBtn.disabled = false;
+      setButtonBusy(updateLiveInventoryBtn, false);
     }
   });
 }
@@ -2474,6 +3596,7 @@ if (uploadTypeInput instanceof HTMLSelectElement) {
 
 dataUploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  setButtonBusy(uploadBtn, true, "Uploading...");
   try {
     const formData = new FormData(dataUploadForm);
     const fileInput = dataUploadForm.querySelector('input[name="files"]');
@@ -2490,15 +3613,52 @@ dataUploadForm.addEventListener("submit", async (event) => {
     if (!uploadPayload.rows.length) {
       throw new Error(`Could not find any usable planning rows in the selected ${label}.`);
     }
-    setStatus(`Uploading ${label}: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable rows, ${integer(uploadPayload.rows.length)} lean rows...`);
-    const payload = await postJson(url, uploadPayload);
+
+    // Chunk uploads by date to avoid sending huge JSON payloads (monthly TikTok exports can be 50MB+).
+    const chunks = chunkRowsByDate(uploadPayload.rows, 1500);
+    let totalRowsWritten = 0;
+    let totalSkuRowsWritten = 0;
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      const range = chunk.uploadedDates.length ? ` (${chunk.uploadedDates[0]} to ${chunk.uploadedDates[chunk.uploadedDates.length - 1]})` : "";
+      setStatus(`Uploading ${label} chunk ${index + 1}/${chunks.length}${range}...`);
+      const chunkPayload = {
+        platform: uploadPayload.platform,
+        rows: chunk.rows,
+        uploadedDates: chunk.uploadedDates,
+        rawRowCount: index === 0 ? uploadPayload.rawRowCount : 0,
+        sourceRowCount: index === 0 ? uploadPayload.sourceRowCount : 0,
+        writeAudit: false,
+      };
+      const response = await postJson(url, chunkPayload);
+      totalRowsWritten += Number(response?.upload?.rowsWritten || 0);
+      totalSkuRowsWritten += Number(response?.upload?.skuRowsWritten || 0);
+    }
+
+    // Finalize a single audit record so the sidebar "Data as of" stays correct.
+    await postJson(url, {
+      finalize: true,
+      platform: uploadPayload.platform,
+      rawRowCount: uploadPayload.rawRowCount,
+      sourceRowCount: uploadPayload.sourceRowCount,
+      uploadedDates: uploadPayload.uploadedDates,
+      rowsWritten: totalRowsWritten,
+      skuRowsWritten: totalSkuRowsWritten,
+    });
+
     await loadWorkspace();
-    const rowsWritten = Number(payload?.upload?.rowsWritten || uploadPayload.rows.length);
+    const rowsWritten = totalRowsWritten || uploadPayload.rows.length;
+    const skuRowsWritten = totalSkuRowsWritten || 0;
+    const uploadedDates = Array.isArray(uploadPayload.uploadedDates) ? uploadPayload.uploadedDates.filter(Boolean).slice().sort() : [];
+    const uploadedRange = uploadedDates.length ? ` (${uploadedDates[0]} to ${uploadedDates[uploadedDates.length - 1]})` : "";
     setStatus(
-      `${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable rows, ${integer(rowsWritten)} lean rows across ${uploadPayload.uploadedDates.length} dates.`,
+      `${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable listing rows, ${integer(rowsWritten)} lean core-product rows${skuRowsWritten ? `, ${integer(skuRowsWritten)} lean SKU sales rows` : ""} across ${uploadedDates.length} dates${uploadedRange}.`,
     );
   } catch (error) {
     setStatus(error.message || "Could not upload files.", true);
+  } finally {
+    setButtonBusy(uploadBtn, false);
   }
 });
 
@@ -2510,6 +3670,149 @@ planForm.addEventListener("submit", async (event) => {
   } catch (error) {
     setStatus(error.message || "Planning failed.", true);
   }
+});
+
+if (campaignForm) {
+  campaignForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const formData = new FormData(campaignForm);
+      const name = String(formData.get("name") || "").trim();
+      const startDateRaw = String(formData.get("startDate") || "").trim();
+      const endDateRaw = String(formData.get("endDate") || "").trim();
+      const startDate = toIsoDate(startDateRaw);
+      const endDate = toIsoDate(endDateRaw);
+      const liftPct = parsePercentValue(formData.get("liftPct"));
+      const days = inclusiveDayCount(startDate, endDate);
+      if (!name) throw new Error("Enter an event name.");
+      if (!startDate || !endDate) throw new Error("Choose a start and end date.");
+      if (days <= 0) throw new Error("End date must be the same as or after start date.");
+      const next = normalizeMarketingConfig(marketingConfig);
+      next.campaigns = [
+        ...next.campaigns.filter((row) => row && row.id),
+        { id: makeClientId("campaign"), name, startDate, endDate, liftPct },
+      ];
+      setStatus("Saving campaign...");
+      await persistMarketingConfig(next, "Campaign saved.");
+      campaignForm.reset();
+    } catch (error) {
+      setStatus(error.message || "Could not save campaign.", true);
+    }
+  });
+}
+
+campaignBody?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-campaign-delete]");
+  if (!(button instanceof HTMLButtonElement)) return;
+  const id = String(button.dataset.campaignDelete || "");
+  if (!id) return;
+  try {
+    const next = normalizeMarketingConfig(marketingConfig);
+    next.campaigns = next.campaigns.filter((row) => row.id !== id);
+    setStatus("Deleting campaign...");
+    await persistMarketingConfig(next, "Campaign deleted.");
+  } catch (error) {
+    setStatus(error.message || "Could not delete campaign.", true);
+  }
+});
+
+if (launchPlanForm) {
+  launchPlanForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const formData = new FormData(launchPlanForm);
+      const editId = String(formData.get("editId") || "").trim();
+      const newProductName = String(formData.get("newProductName") || "").trim();
+      const proxyProduct = String(formData.get("proxyProduct") || "").trim();
+      const startDateRaw = String(formData.get("startDate") || "").trim();
+      const endDateRaw = String(formData.get("endDate") || "").trim();
+      const startDate = toIsoDate(startDateRaw);
+      const endDate = toIsoDate(endDateRaw);
+      const strengthPct = parsePercentValue(formData.get("strengthPct")) ?? 100;
+      const committedUnitsRaw = String(formData.get("committedUnits") || "").trim();
+      const committedUnits = committedUnitsRaw ? Number(committedUnitsRaw) : Number.NaN;
+      if (!newProductName) throw new Error("Enter a brand new product name.");
+      if (!proxyProduct) throw new Error("Select a proxy product.");
+      if (!startDate) throw new Error("Choose a launch start date.");
+      if (endDate) {
+        const days = inclusiveDayCount(startDate, endDate);
+        if (days <= 0) throw new Error("Launch end date must be the same as or after start date.");
+      }
+      if (!Number.isFinite(committedUnits) || committedUnits < 0) throw new Error("Enter committed inbound units.");
+
+      const id = editId || makeClientId("launch");
+      const next = normalizeMarketingConfig(marketingConfig);
+      next.launchPlans = [
+        ...next.launchPlans.filter((row) => row && row.id && row.id !== id),
+        {
+          id,
+          newProductName,
+          proxyProduct,
+          startDate,
+          endDate,
+          strengthPct,
+          committedUnits: Math.round(committedUnits),
+        },
+      ];
+      setStatus(editId ? "Updating launch plan..." : "Saving launch plan...");
+      await persistMarketingConfig(next, editId ? "Launch plan updated." : "Launch plan saved.");
+      launchPlanForm.reset();
+      clearLaunchEditMode();
+      renderLaunchProxyOptions();
+    } catch (error) {
+      setStatus(error.message || "Could not save launch plan.", true);
+    }
+  });
+}
+
+launchPlanBody?.addEventListener("click", async (event) => {
+  const editButton = event.target.closest("button[data-launch-edit]");
+  if (editButton instanceof HTMLButtonElement) {
+    const id = String(editButton.dataset.launchEdit || "");
+    if (!id) return;
+    const plan = (marketingConfig?.launchPlans || []).find((row) => row && row.id === id);
+    if (!plan) {
+      setStatus("Could not find that launch plan.", true);
+      return;
+    }
+    if (launchPlanForm) {
+      launchPlanForm.querySelector('input[name="newProductName"]').value = plan.newProductName || "";
+      launchProxyProductSelect.value = plan.proxyProduct || "";
+      launchPlanForm.querySelector('input[name="startDate"]').value = plan.startDate ? toUsDate(plan.startDate) : "";
+      launchPlanForm.querySelector('input[name="endDate"]').value = plan.endDate ? toUsDate(plan.endDate) : "";
+      launchPlanForm.querySelector('input[name="strengthPct"]').value = String(plan.strengthPct ?? 100);
+      launchPlanForm.querySelector('input[name="committedUnits"]').value = String(plan.committedUnits ?? 0);
+    }
+    setLaunchEditMode(plan);
+    setStatus("Editing launch plan.");
+    return;
+  }
+
+  const deleteButton = event.target.closest("button[data-launch-delete]");
+  if (!(deleteButton instanceof HTMLButtonElement)) return;
+  const id = String(deleteButton.dataset.launchDelete || "");
+  if (!id) return;
+  try {
+    const next = normalizeMarketingConfig(marketingConfig);
+    next.launchPlans = next.launchPlans.filter((row) => row.id !== id);
+    if (activeLaunchEditId && activeLaunchEditId === id) {
+      clearLaunchEditMode();
+      launchPlanForm?.reset();
+      renderLaunchProxyOptions();
+    }
+    setStatus("Deleting launch plan...");
+    await persistMarketingConfig(next, "Launch plan deleted.");
+  } catch (error) {
+    setStatus(error.message || "Could not delete launch plan.", true);
+  }
+});
+
+cancelLaunchEditButton?.addEventListener("click", () => {
+  if (!launchPlanForm) return;
+  launchPlanForm.reset();
+  clearLaunchEditMode();
+  renderLaunchProxyOptions();
+  setStatus("Edit cancelled.");
 });
 
 kpiFilterForm.addEventListener("submit", async (event) => {
@@ -2610,6 +3913,11 @@ resetForecastSettingsButton.addEventListener("click", () => {
 
 saveForecastSettingsButton.addEventListener("click", async () => {
   try {
+    const unlocked = await ensureSettingsUnlocked();
+    if (!unlocked) {
+      setStatus("Settings are locked.", true);
+      return;
+    }
     const total = Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]")).reduce((sum, input) => sum + Number(input.value || 0), 0);
     if (Math.abs(total - 100) > 0.2) {
       setStatus("Product mix should add up to 100%.", true);
@@ -2621,15 +3929,11 @@ saveForecastSettingsButton.addEventListener("click", async () => {
         Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]")).map((input) => [String(input.dataset.productMix || ""), Number(input.value || 0)]),
       ),
     };
-    const response = await fetch("/api/forecast-settings", {
+    const payload = await fetchJson("/api/forecast-settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ monthKey: activeForecastDialogMonth, setting }),
     });
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error || "Could not save month settings.");
-    }
     forecastSettings = normalizeForecastSettings({ forecastSettings: payload.forecastSettings || {} });
     renderForecastSummary();
     closeForecastDialog();
@@ -2643,16 +3947,17 @@ saveForecastSettingsButton.addEventListener("click", async () => {
 saveSettingsButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   try {
+    const unlocked = await ensureSettingsUnlocked();
+    if (!unlocked) {
+      setStatus("Settings are locked.", true);
+      return;
+    }
     const nextSettings = readPlannerSettingsForm();
-    const response = await fetch("/api/planner-settings", {
+    const payload = await fetchJson("/api/planner-settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: nextSettings }),
     });
-    const payload = await response.json();
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error || "Could not save planner settings.");
-    }
     sharedPlannerSettings = normalizePlannerSettings(payload.plannerSettings || nextSettings);
     renderPlannerSettings(sharedPlannerSettings);
     document.getElementById("lead-time-days").value = String(sharedPlannerSettings.global.defaultLeadTimeDays || 8);
@@ -2663,8 +3968,81 @@ saveSettingsButton?.addEventListener("click", async (event) => {
   }
 });
 
+addSkuMappingButton?.addEventListener("click", () => {
+  if (!skuMappingSnapshot.editable) {
+    setStatus("SKU mapping edits are disabled in live mode.", true);
+    return;
+  }
+  const current = readSkuMappingTableRows();
+  const blank = normalizeSkuMappingRow({ source: "local", skuId: "", productName: "", product1: "", product2: "", product3: "", product4: "" });
+  renderSkuMappingTable([blank, ...current]);
+});
+
+saveSkuMappingButton?.addEventListener("click", async () => {
+  await saveSkuMappingOverrides();
+});
+
+skuMappingBody?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-sku-mapping-delete]");
+  if (!button) return;
+  const row = button.closest('tr[data-sku-mapping-row="true"]');
+  if (!row) return;
+  row.remove();
+});
+
+skuMappingBody?.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const row = target.closest('tr[data-sku-mapping-row="true"]');
+  if (!row) return;
+
+  const skuTypeSelect = row.querySelector('select[data-sku-map="skuType"]');
+  const product1 = row.querySelector('input[data-sku-map="product1"]');
+  const product2 = row.querySelector('input[data-sku-map="product2"]');
+  const product3 = row.querySelector('input[data-sku-map="product3"]');
+  const product4 = row.querySelector('input[data-sku-map="product4"]');
+
+  const currentRow = normalizeSkuMappingRowForSave({
+    skuType: skuTypeSelect ? skuTypeSelect.value : "",
+    product1: product1 ? product1.value : "",
+    product2: product2 ? product2.value : "",
+    product3: product3 ? product3.value : "",
+    product4: product4 ? product4.value : "",
+  });
+
+  if (target.matches('select[data-sku-map="skuType"]')) {
+    if (product1) product1.value = currentRow.product1 || "";
+    if (product2) product2.value = currentRow.product2 || "";
+    if (product3) product3.value = currentRow.product3 || "";
+    if (product4) product4.value = currentRow.product4 || "";
+    return;
+  }
+
+  if (
+    target.matches('input[data-sku-map="product1"]') ||
+    target.matches('input[data-sku-map="product2"]') ||
+    target.matches('input[data-sku-map="product3"]') ||
+    target.matches('input[data-sku-map="product4"]')
+  ) {
+    if (skuTypeSelect instanceof HTMLSelectElement) {
+      skuTypeSelect.value = normalizeSkuTypeForSelect("", currentRow);
+    }
+  }
+});
+
 railButtons.forEach((button) => {
-  button.addEventListener("click", () => setActivePage(button.dataset.pageTarget || "planning"));
+  button.addEventListener("click", async () => {
+    const target = button.dataset.pageTarget || "planning";
+    if (target === "kpis" && hostedKpiButton?.dataset?.disabled === "true") {
+      setStatus("TikTok KPIs: Coming soon.");
+      return;
+    }
+    if (target === "settings") {
+      const unlocked = await ensureSettingsUnlocked();
+      if (!unlocked) return;
+    }
+    setActivePage(target);
+  });
 });
 
 historyTabButtons.forEach((button) => {
@@ -2684,6 +4062,7 @@ kpiDetailToggle?.addEventListener("toggle", () => {
   if (hint) hint.textContent = kpiDetailToggle.open ? "Collapse" : "Expand";
 });
 
+setupDatePickers();
 setActivePage("planning");
 setActiveHistoryTab("monthly");
 if (window.localStorage.getItem(FORECAST_STORAGE_KEY) === "true") {

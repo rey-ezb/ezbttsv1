@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { saveHostedPlannerSettings } from "@/lib/hosted-planner";
+import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
+    const unauthorized = await requireSettingsAuth(request);
+    if (unauthorized) return unauthorized;
     const body = await request.json();
     const plannerSettings = await saveHostedPlannerSettings(body?.settings || {});
     return NextResponse.json({

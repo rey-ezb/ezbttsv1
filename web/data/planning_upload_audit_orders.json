@@ -1,0 +1,13 @@
+{
+  "uploadType": "orders",
+  "platform": "TikTok",
+  "rawRowCount": 2,
+  "usableRowCount": 2,
+  "rowsWritten": 1,
+  "uploadedDates": [
+    "2026-04-21"
+  ],
+  "firstDate": "2026-04-21",
+  "lastDate": "2026-04-21",
+  "uploadedAt": "2026-04-23T19:04:46.710Z"
+}

@@ -20,9 +20,18 @@ server.out.log
 server.err.log
 preview.out.log
 preview.err.log
+preview-*.out.log
+preview-*.err.log
+web/preview-*.out.log
+web/preview-*.err.log
 server8091.out.log
 server8091.err.log
 _run_8091.py
+firestore_backups/
+.codex-temp/
+.codex-restore/
+web/logs/
+web/tsconfig.tsbuildinfo
 
 .vercel
 .vercel-wrapper/
