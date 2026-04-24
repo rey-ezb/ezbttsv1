@@ -3913,11 +3913,6 @@ resetForecastSettingsButton.addEventListener("click", () => {
 
 saveForecastSettingsButton.addEventListener("click", async () => {
   try {
-    const unlocked = await ensureSettingsUnlocked();
-    if (!unlocked) {
-      setStatus("Settings are locked.", true);
-      return;
-    }
     const total = Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]")).reduce((sum, input) => sum + Number(input.value || 0), 0);
     if (Math.abs(total - 100) > 0.2) {
       setStatus("Product mix should add up to 100%.", true);

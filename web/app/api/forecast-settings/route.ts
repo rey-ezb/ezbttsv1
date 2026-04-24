@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { saveHostedForecastSetting } from "@/lib/hosted-planner";
-import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
-    const unauthorized = await requireSettingsAuth(request);
-    if (unauthorized) return unauthorized;
     const body = await request.json();
     const monthKey = String(body?.monthKey || "").trim();
     if (!monthKey || monthKey.length !== 7) {
