@@ -1,50 +1,59 @@
 {
   "global": {
     "defaultExpiryMonths": 24,
-    "defaultLeadTimeDays": 8
+    "defaultLeadTimeDays": 8,
+    "safetyStockWeeksH1": 3,
+    "safetyStockWeeksH2": 5
   },
   "products": {
     "Birria Bomb 2-Pack": {
       "cogs": 3.1,
       "moq": 0,
       "casePack": 24,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     },
     "Chile Colorado Bomb 2-Pack": {
       "cogs": 3.95,
       "moq": 0,
       "casePack": 24,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     },
     "Pozole Bomb 2-Pack": {
       "cogs": 3.05,
       "moq": 0,
       "casePack": 24,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     },
     "Pozole Verde Bomb 2-Pack": {
       "cogs": 3.75,
       "moq": 0,
       "casePack": 24,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     },
     "Tinga Bomb 2-Pack": {
       "cogs": 3.15,
       "moq": 0,
       "casePack": 24,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     },
     "Brine Bomb": {
       "cogs": 4.2,
       "moq": 0,
       "casePack": 24,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     },
     "Variety Pack": {
       "cogs": 13.35,
       "moq": 0,
       "casePack": 4,
-      "shelfLife": 24
+      "shelfLife": 24,
+      "safetyStockWeeksOverride": 0
     }
   }
 }

@@ -1,7 +1,33 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { usesLocalPlannerData } from "./data-source-mode";
 import { getFirebaseAdminDb } from "./firebase-admin";
 import { getInventorySheetSource, loadLatestInventorySnapshot } from "./inventory-sheet";
+import {
+  campaignAverageLiftFactor,
+  launchActiveDaysInHorizon,
+  launchDailyDemandFromProxyAvg,
+} from "./marketing-math";
+import { computeBaselineDemandByProduct, type PlannerVelocityMode } from "./planner-math";
+import { safetyStockWeeksForProduct } from "./safety-stock";
+import {
+  buildSkuSalesSummaryRows,
+  expandMappedDemandRows,
+  parseTiktokSkuMappingCsv,
+  type DemandUploadInputRow,
+  type SkuSalesSummaryRow,
+  type TikTokSkuMapping,
+} from "./sku-mapping";
+
+type CampaignEventDoc = {
+  id?: string;
+  name: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  liftPct: number; // +40 means 40%
+  createdAt?: string;
+  updatedAt?: string;
+};
 
 type DemandDoc = {
   date: string;
@@ -10,6 +36,7 @@ type DemandDoc = {
   seller_sku_resolved?: string;
   net_units?: number;
   gross_sales?: number;
+  net_gross_sales?: number;
 };
 
 type InventoryDoc = {
@@ -34,6 +61,7 @@ type LaunchPlanDoc = {
   productName: string;
   proxyProductName?: string | null;
   launchDate?: string | null;
+  endDate?: string | null; // optional LTO end date
   launchUnitsCommitted?: number;
   launchStrengthPct?: number;
   launchCoverWeeksTarget?: number;
@@ -48,12 +76,15 @@ type PlannerProductSettings = {
   moq: number;
   casePack: number;
   shelfLife: number;
+  safetyStockWeeksOverride?: number; // 0 => use global half-year rule
 };
 
 type PlannerSharedSettings = {
   global: {
     defaultExpiryMonths: number;
     defaultLeadTimeDays: number;
+    safetyStockWeeksH1: number; // Jan-Jun
+    safetyStockWeeksH2: number; // Jul-Dec
   };
   products: Record<string, PlannerProductSettings>;
 };
@@ -77,8 +108,10 @@ type MonthSummary = {
 };
 
 type SnapshotState = {
+  campaigns: CampaignEventDoc[];
   demand: DemandDoc[];
   samples: DemandDoc[];
+  skuSales: SkuSalesSummaryRow[];
   inventory: InventoryDoc[];
   forecastSettings: ForecastSettingDoc[];
   plannerSettings: PlannerSharedSettings;
@@ -91,23 +124,22 @@ type SnapshotState = {
 
 type LoadedState = {
   state: SnapshotState;
-  source: "live" | "snapshot";
+  source: "live" | "local" | "snapshot";
   detail: string;
   loadedAt: string;
 };
 
-type UploadedDemandRow = {
-  date: string;
-  platform?: string;
-  product_name: string;
-  seller_sku_resolved?: string;
-  net_units?: number;
-  gross_sales?: number;
-};
+type UploadedDemandRow = DemandUploadInputRow;
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const FORECAST_DEFAULTS_FILE = path.join(DATA_DIR, "planner_forecast_defaults.json");
 const PLANNER_SETTINGS_FILE = path.join(DATA_DIR, "planner_shared_settings.json");
+const TIKTOK_SKU_MAPPING_FILE = path.join(DATA_DIR, "tiktok_sku_mapping.csv");
+const LOCAL_SKU_SALES_FILE = path.join(DATA_DIR, "planning_sku_sales_daily.csv");
+const LOCAL_UPLOAD_AUDIT_ORDERS_FILE = path.join(DATA_DIR, "planning_upload_audit_orders.json");
+const LOCAL_UPLOAD_AUDIT_SAMPLES_FILE = path.join(DATA_DIR, "planning_upload_audit_samples.json");
+const LOCAL_CAMPAIGNS_FILE = path.join(DATA_DIR, "planning_campaigns.json");
+const LOCAL_LAUNCH_PLANS_FILE = path.join(DATA_DIR, "planning_launch_plans.json");
 const LIVE_CACHE_MS = 5 * 60 * 1000;
 const PRODUCT_METADATA: Record<
   string,
@@ -159,9 +191,24 @@ const DEFAULT_PLANNER_PRODUCT_SETTINGS: Record<string, PlannerProductSettings> =
 let liveStateCache: { expiresAt: number; value: LoadedState } | null = null;
 let snapshotStateCache: SnapshotState | null = null;
 
+export function invalidateHostedPlannerCache() {
+  liveStateCache = null;
+  snapshotStateCache = null;
+}
+
+// Used by local-only config endpoints to keep overrides lean.
+// Not intended for general app use (hence the name).
+export function __unsafeGetBundledLaunchDefaults() {
+  return buildLaunchPlans();
+}
+
 function asNumber(value: unknown) {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function cleanText(value: unknown) {
+  return String(value ?? "").trim();
 }
 
 function toDate(value: string) {
@@ -197,13 +244,14 @@ function daysInclusive(start: string, end: string) {
   return Math.max(1, Math.floor(diff / 86400000) + 1);
 }
 
-function inRange(date: string, start: string, end: string) {
-  return date >= start && date <= end;
+function overlapDaysInclusive(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+  const start = aStart >= bStart ? aStart : bStart;
+  const end = aEnd <= bEnd ? aEnd : bEnd;
+  return end >= start ? daysInclusive(start, end) : 0;
 }
 
-function quarterSafetyWeeks(date: string) {
-  const month = toDate(date).getUTCMonth() + 1;
-  return month <= 6 ? 3 : 5;
+function inRange(date: string, start: string, end: string) {
+  return date >= start && date <= end;
 }
 
 function uniqueSorted(values: string[]) {
@@ -228,13 +276,56 @@ function isQuotaError(error: unknown) {
 }
 
 function parseCsv(text: string) {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return [];
-  const headers = lines[0].split(",");
-  return lines.slice(1).map((line) => {
-    const values = line.split(",");
-    return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
-  });
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === '"' && inQuotes && next === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      row.push(cell);
+      cell = "";
+      continue;
+    }
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") index += 1;
+      row.push(cell);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+
+  row.push(cell);
+  if (row.some((value) => value.trim())) rows.push(row);
+  if (!rows.length) return [];
+  const headers = rows[0].map((header) => header.trim());
+  return rows.slice(1).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])));
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function toCsv<T extends Record<string, unknown>>(headers: string[], rows: T[]) {
+  return [
+    headers.join(","),
+    ...rows.map((row) => headers.map((header) => csvCell(row[header])).join(",")),
+  ].join("\n") + "\n";
 }
 
 function normalizeMixShare(value: unknown) {
@@ -260,11 +351,13 @@ function buildDefaultPlannerSettings(): PlannerSharedSettings {
     global: {
       defaultExpiryMonths: 24,
       defaultLeadTimeDays: 8,
+      safetyStockWeeksH1: 3,
+      safetyStockWeeksH2: 5,
     },
     products: Object.fromEntries(
       Object.entries(DEFAULT_PLANNER_PRODUCT_SETTINGS).map(([productName, setting]) => [
         productName,
-        { ...setting },
+        { ...setting, safetyStockWeeksOverride: 0 },
       ]),
     ),
   };
@@ -281,6 +374,8 @@ function normalizePlannerSharedSettings(rawSettings: unknown): PlannerSharedSett
     global: {
       defaultExpiryMonths: Math.max(1, asNumber(global.defaultExpiryMonths) || defaults.global.defaultExpiryMonths),
       defaultLeadTimeDays: Math.max(1, asNumber(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
+      safetyStockWeeksH1: Math.max(0, asNumber(global.safetyStockWeeksH1) || defaults.global.safetyStockWeeksH1),
+      safetyStockWeeksH2: Math.max(0, asNumber(global.safetyStockWeeksH2) || defaults.global.safetyStockWeeksH2),
     },
     products: Object.fromEntries(
       CORE_PRODUCT_NAMES.map((productName) => {
@@ -289,6 +384,7 @@ function normalizePlannerSharedSettings(rawSettings: unknown): PlannerSharedSett
           moq: 0,
           casePack: 1,
           shelfLife: defaults.global.defaultExpiryMonths,
+          safetyStockWeeksOverride: 0,
         };
         const productSettings = (products[productName] && typeof products[productName] === "object"
           ? products[productName]
@@ -300,6 +396,10 @@ function normalizePlannerSharedSettings(rawSettings: unknown): PlannerSharedSett
             moq: Math.max(0, asNumber(productSettings.moq)),
             casePack: Math.max(0, asNumber(productSettings.casePack) || defaultsForProduct.casePack),
             shelfLife: Math.max(1, asNumber(productSettings.shelfLife) || defaultsForProduct.shelfLife),
+            safetyStockWeeksOverride: Math.max(
+              0,
+              asNumber(productSettings.safetyStockWeeksOverride) || defaultsForProduct.safetyStockWeeksOverride || 0,
+            ),
           },
         ];
       }),
@@ -322,9 +422,11 @@ function normalizeUploadedDemandRows(rows: UploadedDemandRow[]) {
       seller_sku_resolved: String(row.seller_sku_resolved || "").trim(),
       net_units: 0,
       gross_sales: 0,
+      net_gross_sales: 0,
     };
     current.net_units = asNumber(current.net_units) + asNumber(row.net_units);
     current.gross_sales = asNumber(current.gross_sales) + asNumber(row.gross_sales);
+    current.net_gross_sales = asNumber(current.net_gross_sales) + asNumber(row.net_gross_sales);
     if (!current.seller_sku_resolved) {
       current.seller_sku_resolved = String(row.seller_sku_resolved || "").trim();
     }
@@ -344,6 +446,7 @@ function buildLaunchPlans() {
       productName,
       proxyProductName: metadata.launchProxyProduct || productName,
       launchDate: metadata.launchDate || null,
+      endDate: null,
       launchUnitsCommitted: metadata.launchInboundUnits || 0,
       launchStrengthPct: metadata.launchStrengthPct || 100,
       launchCoverWeeksTarget: metadata.launchCoverWeeksTarget || 0,
@@ -354,17 +457,116 @@ function buildLaunchPlans() {
     }));
 }
 
+function normalizeCampaignEvents(raw: unknown): CampaignEventDoc[] {
+  if (!Array.isArray(raw)) return [];
+  const result: CampaignEventDoc[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Partial<CampaignEventDoc>;
+    const name = cleanText(entry.name);
+    const startDate = cleanText(entry.startDate).slice(0, 10);
+    const endDate = cleanText(entry.endDate).slice(0, 10);
+    const liftPct = asNumber(entry.liftPct);
+    if (!name || !startDate || !endDate) continue;
+    if (endDate < startDate) continue;
+    result.push({
+      id: cleanText(entry.id) || undefined,
+      name,
+      startDate,
+      endDate,
+      liftPct,
+      createdAt: cleanText(entry.createdAt) || undefined,
+      updatedAt: cleanText(entry.updatedAt) || undefined,
+    });
+  }
+  return result.sort((a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name));
+}
+
+function normalizeLaunchPlanOverrides(raw: unknown): LaunchPlanDoc[] {
+  if (!Array.isArray(raw)) return [];
+  const result: LaunchPlanDoc[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Partial<LaunchPlanDoc>;
+    const productName = cleanText(entry.productName);
+    if (!productName) continue;
+    const proxyProductName = cleanText(entry.proxyProductName) || null;
+    const launchDate = cleanText(entry.launchDate).slice(0, 10) || null;
+    const endDate = cleanText(entry.endDate).slice(0, 10) || null;
+    if (endDate && launchDate && endDate < launchDate) continue;
+    result.push({
+      productName,
+      proxyProductName,
+      launchDate,
+      endDate,
+      launchUnitsCommitted: Math.max(0, asNumber(entry.launchUnitsCommitted)),
+      launchStrengthPct: Math.max(0, asNumber(entry.launchStrengthPct || 100)),
+      launchCoverWeeksTarget: Math.max(0, asNumber(entry.launchCoverWeeksTarget)),
+      launchSampleUnits: Math.max(0, asNumber(entry.launchSampleUnits)),
+      launchBundleUpliftPct: Math.max(0, asNumber(entry.launchBundleUpliftPct)),
+      cogs: asNumber(entry.cogs) || undefined,
+      listPrice: asNumber(entry.listPrice) || undefined,
+    });
+  }
+  return result.sort((a, b) => a.productName.localeCompare(b.productName));
+}
+
+function hydrateLaunchPlans(plans: LaunchPlanDoc[]) {
+  return plans.map((plan) => {
+    const productName = cleanText(plan.productName);
+    const metadata = PRODUCT_METADATA[productName];
+    return {
+      ...plan,
+      productName,
+      proxyProductName: cleanText(plan.proxyProductName) || metadata?.launchProxyProduct || productName,
+      launchDate: cleanText(plan.launchDate).slice(0, 10) || null,
+      endDate: cleanText(plan.endDate).slice(0, 10) || null,
+      launchUnitsCommitted: asNumber(plan.launchUnitsCommitted),
+      launchStrengthPct: asNumber(plan.launchStrengthPct) || 100,
+      cogs: plan.cogs ?? metadata?.cogs,
+      listPrice: plan.listPrice ?? metadata?.listPrice,
+    } satisfies LaunchPlanDoc;
+  });
+}
+
+function campaignLiftByDate(campaigns: CampaignEventDoc[], rangeStart: string, rangeEnd: string) {
+  const map = new Map<string, number>();
+  for (const campaign of campaigns) {
+    const liftPct = asNumber(campaign.liftPct);
+    if (!liftPct) continue;
+    const start = campaign.startDate > rangeStart ? campaign.startDate : rangeStart;
+    const end = campaign.endDate < rangeEnd ? campaign.endDate : rangeEnd;
+    if (end < start) continue;
+    for (let cursor = start; cursor <= end; cursor = formatDate(addDays(cursor, 1))) {
+      map.set(cursor, (map.get(cursor) || 0) + (liftPct / 100));
+    }
+  }
+  return map;
+}
+
+function campaignAverageFactor(campaigns: CampaignEventDoc[], rangeStart: string, rangeEnd: string) {
+  const days = daysInclusive(rangeStart, rangeEnd);
+  if (days <= 0) return 1;
+  const liftSum = Array.from(campaignLiftByDate(campaigns, rangeStart, rangeEnd).values()).reduce((sum, value) => sum + value, 0);
+  return 1 + (liftSum / days);
+}
+
 async function loadBundledState() {
   if (snapshotStateCache) {
     return snapshotStateCache;
   }
 
-  const [demandCsv, samplesCsv, inventoryCsv, forecastDefaultsText, plannerSettingsText] = await Promise.all([
+  const [demandCsv, samplesCsv, inventoryCsv, skuSalesCsv, forecastDefaultsText, plannerSettingsText, ordersAuditText, samplesAuditText, campaignsText, launchPlansText] = await Promise.all([
     readFile(path.join(DATA_DIR, "planning_demand_daily.csv"), "utf8"),
     readFile(path.join(DATA_DIR, "planning_samples_daily.csv"), "utf8"),
     readFile(path.join(DATA_DIR, "planning_inventory_daily.csv"), "utf8"),
+    readFile(LOCAL_SKU_SALES_FILE, "utf8").catch(() => ""),
     readFile(FORECAST_DEFAULTS_FILE, "utf8"),
     readFile(PLANNER_SETTINGS_FILE, "utf8").catch(() => JSON.stringify(buildDefaultPlannerSettings())),
+    readFile(LOCAL_UPLOAD_AUDIT_ORDERS_FILE, "utf8").catch(() => ""),
+    readFile(LOCAL_UPLOAD_AUDIT_SAMPLES_FILE, "utf8").catch(() => ""),
+    readFile(LOCAL_CAMPAIGNS_FILE, "utf8").catch(() => ""),
+    readFile(LOCAL_LAUNCH_PLANS_FILE, "utf8").catch(() => ""),
   ]);
 
   const demand = parseCsv(demandCsv).map((row) => ({
@@ -374,6 +576,7 @@ async function loadBundledState() {
     seller_sku_resolved: String(row.seller_sku_resolved || ""),
     net_units: asNumber(row.net_units),
     gross_sales: asNumber(row.gross_sales),
+    net_gross_sales: asNumber(row.net_gross_sales),
   }));
 
   const samples = parseCsv(samplesCsv).map((row) => ({
@@ -383,6 +586,21 @@ async function loadBundledState() {
     seller_sku_resolved: String(row.seller_sku_resolved || ""),
     net_units: asNumber(row.net_units),
     gross_sales: asNumber(row.gross_sales),
+    net_gross_sales: asNumber(row.net_gross_sales),
+  }));
+
+  const skuSales: SkuSalesSummaryRow[] = parseCsv(skuSalesCsv).map((row) => ({
+    date: String(row.date || ""),
+    platform: String(row.platform || "TikTok"),
+    sku_id: String(row.sku_id || ""),
+    product_name: String(row.product_name || ""),
+    sku_type: row.sku_type === "virtual_bundle" ? "virtual_bundle" : "core",
+    core_products: String(row.core_products || ""),
+    units_sold: asNumber(row.units_sold),
+    gross_sales: asNumber(row.gross_sales),
+    avg_gross_per_unit: asNumber(row.avg_gross_per_unit),
+    net_gross_sales: asNumber(row.net_gross_sales),
+    avg_net_gross_per_unit: asNumber(row.avg_net_gross_per_unit),
   }));
 
   const inventoryRows: InventoryDoc[] = parseCsv(inventoryCsv).map((row) => ({
@@ -428,17 +646,47 @@ async function loadBundledState() {
     productMix: setting?.productMix || {},
   }));
   const plannerSettings = normalizePlannerSharedSettings(JSON.parse(plannerSettingsText));
+  const ordersAudit = ordersAuditText ? (JSON.parse(ordersAuditText) as UploadAuditDoc) : null;
+  const samplesAudit = samplesAuditText ? (JSON.parse(samplesAuditText) as UploadAuditDoc) : null;
+  let campaignsParsed: unknown = [];
+  if (campaignsText) {
+    try {
+      campaignsParsed = JSON.parse(campaignsText) as unknown;
+    } catch {
+      campaignsParsed = [];
+    }
+  }
+  let launchPlansParsed: unknown = [];
+  if (launchPlansText) {
+    try {
+      launchPlansParsed = JSON.parse(launchPlansText) as unknown;
+    } catch {
+      launchPlansParsed = [];
+    }
+  }
+  const campaigns = normalizeCampaignEvents(campaignsParsed);
+  const launchOverrides = normalizeLaunchPlanOverrides(launchPlansParsed);
+  const launchPlans = hydrateLaunchPlans(
+    Array.from(
+      new Map<string, LaunchPlanDoc>([
+        ...buildLaunchPlans().map((plan) => [plan.productName, plan] as const),
+        ...launchOverrides.map((plan) => [plan.productName, plan] as const),
+      ]).values(),
+    ),
+  );
 
   snapshotStateCache = {
+    campaigns,
     demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
     samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
+    skuSales: skuSales.sort((a, b) => a.date.localeCompare(b.date) || a.sku_type.localeCompare(b.sku_type) || a.product_name.localeCompare(b.product_name)),
     inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
     forecastSettings,
     plannerSettings,
-    launchPlans: buildLaunchPlans(),
+    launchPlans,
     uploadAudits: {
-      orders: null,
-      samples: null,
+      orders: ordersAudit,
+      samples: samplesAudit,
     },
   };
 
@@ -448,6 +696,50 @@ async function loadBundledState() {
 async function readCollection<T>(name: string) {
   const snapshot = await getFirebaseAdminDb().collection(name).get();
   return snapshot.docs.map((doc) => doc.data() as T);
+}
+
+async function loadTikTokSkuMappings() {
+  const localPreferred = path.join(process.cwd(), "..", "Data", "Tiktok SKU mapping - Sheet1.csv");
+  const candidateFiles = usesLocalPlannerData()
+    ? [TIKTOK_SKU_MAPPING_FILE, localPreferred]
+    : [TIKTOK_SKU_MAPPING_FILE];
+
+  const loaded: Array<{ filePath: string; mappings: TikTokSkuMapping[] }> = [];
+  const errors: string[] = [];
+
+  for (const filePath of candidateFiles) {
+    try {
+      const csv = await readFile(filePath, "utf8");
+      const mappings = parseTiktokSkuMappingCsv(csv);
+      if (mappings.length) {
+        loaded.push({ filePath, mappings });
+      } else {
+        errors.push(`${filePath}: no usable rows`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error || "Unknown error");
+      errors.push(`${filePath}: ${message}`);
+    }
+  }
+
+  if (!loaded.length) {
+    throw new Error(`Could not load TikTok SKU mapping. Tried: ${candidateFiles.join(", ")}. Errors: ${errors.join(" | ")}`);
+  }
+
+  const keyFor = (mapping: TikTokSkuMapping) =>
+    String(mapping.skuId || mapping.productName || "")
+      .trim()
+      .toLowerCase();
+
+  // Merge: bundled mapping first, then local overrides when present.
+  const merged = new Map<string, TikTokSkuMapping>();
+  for (const entry of loaded) {
+    for (const mapping of entry.mappings) {
+      merged.set(keyFor(mapping), mapping);
+    }
+  }
+
+  return Array.from(merged.values());
 }
 
 async function readDoc<T>(collectionName: string, docId: string) {
@@ -480,6 +772,74 @@ async function writeDemandDocs(collectionName: string, rows: DemandDoc[]) {
   }
 }
 
+async function saveLocalDemandDocs(collectionName: "planningDemandDaily" | "planningSamplesDaily", rows: DemandDoc[], uploadedDates: string[]) {
+  const fileName = collectionName === "planningSamplesDaily" ? "planning_samples_daily.csv" : "planning_demand_daily.csv";
+  const filePath = path.join(DATA_DIR, fileName);
+  const existingText = await readFile(filePath, "utf8").catch(() => "");
+  const existingRows: DemandDoc[] = parseCsv(existingText).map((row) => ({
+    date: String(row.date || ""),
+    platform: String(row.platform || "TikTok"),
+    product_name: String(row.product_name || ""),
+    seller_sku_resolved: String(row.seller_sku_resolved || ""),
+    net_units: asNumber(row.net_units),
+    gross_sales: asNumber(row.gross_sales),
+    net_gross_sales: asNumber(row.net_gross_sales),
+  }));
+  const uploadDateSet = new Set(uploadedDates);
+  const mergedRows = [
+    ...existingRows.filter((row) => !uploadDateSet.has(row.date)),
+    ...rows,
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
+  await writeFile(
+    filePath,
+    toCsv(["platform", "date", "product_name", "seller_sku_resolved", "net_units", "gross_sales", "net_gross_sales"], mergedRows as unknown as Record<string, unknown>[]),
+    "utf8",
+  );
+}
+
+function skuSalesDocId(row: SkuSalesSummaryRow) {
+  return Buffer.from(`${row.platform || "TikTok"}__${row.date}__${row.sku_id}__${row.product_name}`, "utf8").toString("base64url");
+}
+
+async function saveLocalSkuSalesDocs(rows: SkuSalesSummaryRow[], uploadedDates: string[]) {
+  const existingText = await readFile(LOCAL_SKU_SALES_FILE, "utf8").catch(() => "");
+  const existingRows: SkuSalesSummaryRow[] = parseCsv(existingText).map((row) => ({
+    date: String(row.date || ""),
+    platform: String(row.platform || "TikTok"),
+    sku_id: String(row.sku_id || ""),
+    product_name: String(row.product_name || ""),
+    sku_type: row.sku_type === "virtual_bundle" ? "virtual_bundle" : "core",
+    core_products: String(row.core_products || ""),
+    units_sold: asNumber(row.units_sold),
+    gross_sales: asNumber(row.gross_sales),
+    avg_gross_per_unit: asNumber(row.avg_gross_per_unit),
+    net_gross_sales: asNumber(row.net_gross_sales),
+    avg_net_gross_per_unit: asNumber(row.avg_net_gross_per_unit),
+  }));
+  const uploadDateSet = new Set(uploadedDates);
+  const mergedRows = [
+    ...existingRows.filter((row) => !uploadDateSet.has(row.date)),
+    ...rows,
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.sku_type.localeCompare(b.sku_type) || a.product_name.localeCompare(b.product_name));
+  await writeFile(
+    LOCAL_SKU_SALES_FILE,
+    toCsv(["date", "platform", "sku_id", "product_name", "sku_type", "core_products", "units_sold", "gross_sales", "avg_gross_per_unit", "net_gross_sales", "avg_net_gross_per_unit"], mergedRows as unknown as Record<string, unknown>[]),
+    "utf8",
+  );
+}
+
+async function writeSkuSalesDocs(rows: SkuSalesSummaryRow[]) {
+  const db = getFirebaseAdminDb();
+  for (const rowChunk of chunkArray(rows, 400)) {
+    const batch = db.batch();
+    rowChunk.forEach((row) => {
+      const ref = db.collection("planningSkuSalesDaily").doc(skuSalesDocId(row));
+      batch.set(ref, row, { merge: true });
+    });
+    await batch.commit();
+  }
+}
+
 async function writeInventoryDocs(rows: InventoryDoc[]) {
   const db = getFirebaseAdminDb();
   for (const rowChunk of chunkArray(rows, 400)) {
@@ -503,21 +863,35 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
     return liveStateCache.value;
   }
 
-  const [demand, samples, inventory, forecastSettings, plannerSettingsDoc, launchPlans, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
+  const [demand, samples, skuSales, inventory, forecastSettings, plannerSettingsDoc, launchPlansRaw, campaignsRaw, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
     readCollection<DemandDoc>("planningDemandDaily"),
     readCollection<DemandDoc>("planningSamplesDaily"),
+    readCollection<SkuSalesSummaryRow>("planningSkuSalesDaily"),
     readCollection<InventoryDoc>("inventorySnapshots"),
     readCollection<ForecastSettingDoc>("forecastSettings"),
     readDoc<PlannerSharedSettings>("planningSettings", "shared"),
     readCollection<LaunchPlanDoc>("launchPlans"),
+    readCollection<CampaignEventDoc>("campaignEvents"),
     readDoc<UploadAuditDoc>("planningUploadAudit", "orders"),
     readDoc<UploadAuditDoc>("planningUploadAudit", "samples"),
   ]);
 
+  const launchPlans = hydrateLaunchPlans(
+    Array.from(
+      new Map<string, LaunchPlanDoc>([
+        ...buildLaunchPlans().map((plan) => [plan.productName, plan] as const),
+        ...normalizeLaunchPlanOverrides(launchPlansRaw).map((plan) => [plan.productName, plan] as const),
+      ]).values(),
+    ),
+  );
+  const campaigns = normalizeCampaignEvents(campaignsRaw);
+
   const value: LoadedState = {
     state: {
+      campaigns,
       demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
       samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
+      skuSales: skuSales.sort((a, b) => a.date.localeCompare(b.date) || a.sku_type.localeCompare(b.sku_type) || a.product_name.localeCompare(b.product_name)),
       inventory: inventory.sort((a, b) => a.snapshotDate.localeCompare(b.snapshotDate) || a.product_name.localeCompare(b.product_name)),
       forecastSettings,
       plannerSettings: normalizePlannerSharedSettings(plannerSettingsDoc),
@@ -541,6 +915,19 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
 }
 
 async function loadState(options: { forceRefresh?: boolean } = {}): Promise<LoadedState> {
+  if (usesLocalPlannerData()) {
+    if (options.forceRefresh) {
+      snapshotStateCache = null;
+    }
+    const snapshotState = await loadBundledState();
+    return {
+      state: snapshotState,
+      source: "local",
+      detail: "Local lean snapshot",
+      loadedAt: new Date().toISOString(),
+    };
+  }
+
   try {
     return await loadLiveState(Boolean(options.forceRefresh));
   } catch (error) {
@@ -666,7 +1053,10 @@ function buildWorkspace(stateInfo: LoadedState) {
       excludeSpikes: true,
       upliftPct: defaults[monthKey(horizonStartDate)] ?? 30,
       leadTimeDays: state.plannerSettings.global.defaultLeadTimeDays,
-      safetyRule: "3 weeks in Q1 and Q2. 5 weeks in Q3 and Q4.",
+      safetyRule: `${Math.max(0, asNumber(state.plannerSettings.global.safetyStockWeeksH1))} weeks in Jan-Jun. ${Math.max(
+        0,
+        asNumber(state.plannerSettings.global.safetyStockWeeksH2),
+      )} weeks in Jul-Dec.`,
       forecastYear: horizonStartDate.getUTCFullYear(),
       forecastDefaults: defaults,
       forecastSettings: settings,
@@ -765,6 +1155,51 @@ function buildLaunchPlanning(
   };
 }
 
+function buildSkuSalesSummary(skuSalesRows: SkuSalesSummaryRow[], start: string, end: string) {
+  const grouped = new Map<string, SkuSalesSummaryRow>();
+
+  skuSalesRows
+    .filter((row) => inRange(row.date, start, end))
+    .forEach((row) => {
+      const key = `${row.sku_type}__${row.sku_id}__${row.product_name}`;
+      const current = grouped.get(key) || {
+        date: `${start} to ${end}`,
+        platform: row.platform || "TikTok",
+        sku_id: row.sku_id,
+        product_name: row.product_name,
+        sku_type: row.sku_type,
+        core_products: row.core_products,
+        units_sold: 0,
+        gross_sales: 0,
+        avg_gross_per_unit: 0,
+        net_gross_sales: 0,
+        avg_net_gross_per_unit: 0,
+      };
+      current.units_sold += asNumber(row.units_sold);
+      current.gross_sales += asNumber(row.gross_sales);
+      current.avg_gross_per_unit = current.units_sold > 0 ? current.gross_sales / current.units_sold : 0;
+      const explicitNet = asNumber(row.net_gross_sales);
+      if (explicitNet > 0) {
+        current.net_gross_sales += explicitNet;
+      } else if (asNumber(row.units_sold) > 0) {
+        // Back-compat: older lean snapshots stored net_gross_sales as 0 even for positive units.
+        current.net_gross_sales += asNumber(row.gross_sales);
+      }
+      current.avg_net_gross_per_unit = current.units_sold > 0 ? current.net_gross_sales / current.units_sold : 0;
+      grouped.set(key, current);
+    });
+
+  return {
+    rows: Array.from(grouped.values()).sort(
+      (a, b) =>
+        a.sku_type.localeCompare(b.sku_type) ||
+        b.gross_sales - a.gross_sales ||
+        a.product_name.localeCompare(b.product_name),
+    ),
+    sourceRows: skuSalesRows.length,
+  };
+}
+
 export async function runHostedPlanning(params: {
   baselineStart?: string;
   baselineEnd?: string;
@@ -802,9 +1237,10 @@ export async function runHostedPlanning(params: {
   const upliftFactor = 1 + (asNumber(forecastSetting.upliftPct) / 100);
   const forecastProductMix = forecastSetting.productMix || {};
 
+  const campaigns = normalizeCampaignEvents(state.campaigns || []);
   const baselineDemandRows = state.demand.filter((row) => inRange(row.date, baselineStart, baselineEnd));
   const baselineSampleRows = state.samples.filter((row) => inRange(row.date, baselineStart, baselineEnd));
-  const baselineDays = daysInclusive(baselineStart, baselineEnd);
+  const baselineDays = Math.max(1, daysInclusive(baselineStart, baselineEnd));
   const latestInventory = latestInventoryByProduct(state.inventory);
   const productNames = uniqueSorted([
     ...state.demand.map((row) => row.product_name),
@@ -846,46 +1282,15 @@ export async function runHostedPlanning(params: {
     };
   }
 
-  const demandByProduct = new Map<
-    string,
-    { salesUnits: number; sampleUnits: number; grossSales: number; avgDailyDemand: number; smoothedUnits: number; daysUsed: number }
-  >();
-  for (const productName of productNames) {
-    const salesRows = baselineDemandRows.filter((row) => row.product_name === productName);
-    const sampleRows = baselineSampleRows.filter((row) => row.product_name === productName);
-    const salesUnits = salesRows.reduce((sum, row) => sum + asNumber(row.net_units), 0);
-    const sampleUnits = sampleRows.reduce((sum, row) => sum + asNumber(row.net_units), 0);
-
-    const dailySales = new Map<string, number>();
-    salesRows.forEach((row) => {
-      if (asNumber(row.net_units) > 0) {
-        dailySales.set(row.date, (dailySales.get(row.date) || 0) + asNumber(row.net_units));
-      }
-    });
-
-    const activeDaysList = Array.from(dailySales.values()).sort((a, b) => b - a);
-    let smoothedSalesUnits = salesUnits;
-    let daysToUse = baselineDays;
-
-    if (excludeSpikes && activeDaysList.length > 14) {
-      smoothedSalesUnits = salesUnits - activeDaysList[0] - activeDaysList[1];
-      daysToUse = baselineDays - 2;
-    }
-
-    if (activeDaysList.length > 0 && activeDaysList.length < daysToUse * 0.8) {
-      daysToUse = activeDaysList.length;
-    }
-
-    const unitsUsed = velocityMode === "sales_plus_samples" ? smoothedSalesUnits + sampleUnits : smoothedSalesUnits;
-    demandByProduct.set(productName, {
-      salesUnits,
-      sampleUnits,
-      grossSales: salesRows.reduce((sum, row) => sum + asNumber(row.gross_sales), 0),
-      avgDailyDemand: daysToUse > 0 ? unitsUsed / daysToUse : 0,
-      smoothedUnits: smoothedSalesUnits,
-      daysUsed: daysToUse,
-    });
-  }
+  const normalizedVelocityMode: PlannerVelocityMode = velocityMode === "sales_plus_samples" ? "sales_plus_samples" : "sales_only";
+  const demandByProduct = computeBaselineDemandByProduct({
+    productNames,
+    baselineDemandRows,
+    baselineSampleRows,
+    baselineDays,
+    velocityMode: normalizedVelocityMode,
+    excludeSpikes,
+  });
 
   const totalSalesUnits = Array.from(demandByProduct.values()).reduce((sum, row) => sum + row.salesUnits, 0);
   const totalSales = Array.from(demandByProduct.values()).reduce((sum, row) => sum + row.grossSales, 0);
@@ -899,15 +1304,25 @@ export async function runHostedPlanning(params: {
     ? normalizeMixMap(forecastProductMix)
     : baselineMix;
   const totalAvgDailyDemand = Array.from(demandByProduct.values()).reduce((sum, row) => sum + row.avgDailyDemand, 0);
-  const totalForecastDailyDemand = totalAvgDailyDemand * upliftFactor;
+  const campaignHorizonFactor = campaignAverageLiftFactor(campaigns, horizonStart, horizonEnd);
+  const totalForecastDailyDemand = totalAvgDailyDemand * upliftFactor * campaignHorizonFactor;
+  const launchPlanByProduct = new Map(state.launchPlans.map((plan) => [plan.productName, plan] as const));
 
-  const safetyWeeks = quarterSafetyWeeks(horizonStart);
   const horizonDays = daysInclusive(horizonStart, horizonEnd);
   const rows = productNames.map((productName) => {
+    const safetyWeeks = safetyStockWeeksForProduct({
+      date: horizonStart,
+      global: {
+        safetyStockWeeksH1: sharedSettings.global.safetyStockWeeksH1,
+        safetyStockWeeksH2: sharedSettings.global.safetyStockWeeksH2,
+      },
+      productOverrideWeeks: sharedSettings.products?.[productName]?.safetyStockWeeksOverride,
+    });
     const demand = demandByProduct.get(productName) || {
       salesUnits: 0,
       sampleUnits: 0,
       grossSales: 0,
+      netGrossSales: 0,
       avgDailyDemand: 0,
       smoothedUnits: 0,
       daysUsed: baselineDays,
@@ -915,14 +1330,47 @@ export async function runHostedPlanning(params: {
     const inventory = latestInventory.get(productName);
     const transitStats = calculateTransitStats(state.inventory, productName);
     const activeLeadTimeDays = transitStats.historicalLeadTimeDays || leadTimeDays;
-    const forecastDailyDemand = totalForecastDailyDemand * (futureMix[productName] || 0);
-    const onHand = asNumber(inventory?.on_hand);
-    const inTransit = asNumber(inventory?.in_transit);
+    const plan = launchPlanByProduct.get(productName);
+    const baseForecastDailyDemand = totalForecastDailyDemand * (futureMix[productName] || 0);
+    let forecastDailyDemand = baseForecastDailyDemand;
+    let horizonDemandDays = horizonDays;
+    const isNewLaunch = Boolean(plan?.launchDate) && demand.salesUnits === 0 && demand.sampleUnits === 0;
+
+    // Launch plans: future demand is derived from a proxy product, scaled by strength, and only applies during the active window.
+    if (isNewLaunch && plan?.launchDate) {
+      const proxyName = cleanText(plan.proxyProductName) || productName;
+      const proxyMixShare = futureMix[proxyName] || 0;
+      const proxyForecastDailyDemand = proxyMixShare > 0
+        ? (totalForecastDailyDemand * proxyMixShare)
+        : (asNumber(demandByProduct.get(proxyName)?.avgDailyDemand) * upliftFactor * campaignHorizonFactor);
+      const activeDays = launchActiveDaysInHorizon(plan, horizonStart, horizonEnd);
+      horizonDemandDays = activeDays;
+      forecastDailyDemand = activeDays > 0
+        ? launchDailyDemandFromProxyAvg(proxyForecastDailyDemand, asNumber(plan.launchStrengthPct) || 100)
+        : 0;
+    }
+
+    let snapshotDate = inventory?.snapshotDate || horizonStart;
+    if (isNewLaunch && plan?.launchDate && plan.launchDate > snapshotDate) {
+      snapshotDate = plan.launchDate;
+    }
+
+    let onHand = asNumber(inventory?.on_hand);
+    let inTransit = asNumber(inventory?.in_transit);
+    let transitEta = inventory?.transit_eta || null;
+    if (isNewLaunch && plan?.launchDate) {
+      const committed = asNumber(plan.launchUnitsCommitted);
+      if (committed > 0 && onHand === 0 && inTransit === 0) {
+        onHand = committed;
+        inTransit = 0;
+        transitEta = null;
+      }
+    }
     const currentSupply = onHand + inTransit;
     const safetyStockUnits = forecastDailyDemand * safetyWeeks * 7;
     const leadTimeDemandUnits = forecastDailyDemand * activeLeadTimeDays;
     const reorderPointUnits = leadTimeDemandUnits + safetyStockUnits;
-    const targetStockUnits = (forecastDailyDemand * horizonDays) + safetyStockUnits;
+    const targetStockUnits = (forecastDailyDemand * horizonDemandDays) + safetyStockUnits;
     let rawRecommendedUnits = Math.max(0, targetStockUnits - currentSupply);
     let recommendedOrderUnits = rawRecommendedUnits;
     const moq = asNumber(getProductSetting(productName, "moq", asNumber(inventory?.moq)));
@@ -933,14 +1381,13 @@ export async function runHostedPlanning(params: {
       if (casePack > 0) recommendedOrderUnits = Math.ceil(recommendedOrderUnits / casePack) * casePack;
     }
 
-    const snapshotDate = inventory?.snapshotDate || horizonStart;
     const daysOfOnHand = forecastDailyDemand > 0 ? onHand / forecastDailyDemand : Infinity;
     const daysOfSupply = forecastDailyDemand > 0 ? currentSupply / forecastDailyDemand : Infinity;
     const onHandStockoutDate = daysOfOnHand !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfOnHand))) : null;
     const projectedStockout = daysOfSupply !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfSupply))) : null;
     let transitGapDays = 0;
-    if (inTransit > 0 && inventory?.transit_eta && onHandStockoutDate) {
-      const etaDays = daysInclusive(snapshotDate, inventory.transit_eta);
+    if (inTransit > 0 && transitEta && onHandStockoutDate) {
+      const etaDays = daysInclusive(snapshotDate, transitEta);
       if (etaDays > daysOfOnHand) transitGapDays = Math.floor(etaDays - daysOfOnHand);
     }
     const reorderDate = projectedStockout ? formatDate(addDays(projectedStockout, -activeLeadTimeDays)) : null;
@@ -971,6 +1418,7 @@ export async function runHostedPlanning(params: {
       on_hand_stockout_date: onHandStockoutDate,
       avg_daily_demand: demand.avgDailyDemand,
       avg_daily_gross_sales: demand.grossSales / baselineDays,
+      avg_daily_net_gross_sales: demand.netGrossSales / baselineDays,
       baseline_start: baselineStart,
       baseline_end: baselineEnd,
       sales_units_in_baseline: demand.salesUnits,
@@ -981,12 +1429,13 @@ export async function runHostedPlanning(params: {
       mix_pct: totalSalesUnits > 0 ? demand.salesUnits / totalSalesUnits : 0,
       sales_mix_pct: totalSales > 0 ? demand.grossSales / totalSales : 0,
       gross_sales_in_baseline: demand.grossSales,
+      net_gross_sales_in_baseline: demand.netGrossSales,
       on_hand: onHand,
       in_transit: inTransit,
       transit_started_on: transitStats.transitStartedOn,
       historical_lead_time_days: transitStats.historicalLeadTimeDays,
       used_lead_time_days: activeLeadTimeDays,
-      transit_eta: inventory?.transit_eta || null,
+      transit_eta: transitEta,
       current_supply_units: currentSupply,
       weeks_of_supply: forecastDailyDemand > 0 ? currentSupply / (forecastDailyDemand * 7) : null,
       safety_stock_units: safetyStockUnits,
@@ -996,13 +1445,13 @@ export async function runHostedPlanning(params: {
       recommended_order_units: recommendedOrderUnits,
       raw_recommended_units: rawRecommendedUnits,
       forecast_daily_demand: forecastDailyDemand,
-      forecast_units: forecastDailyDemand * horizonDays,
+      forecast_units: forecastDailyDemand * horizonDemandDays,
       lead_time_days: leadTimeDays,
       lead_time_demand_units: leadTimeDemandUnits,
       reorder_point_units: reorderPointUnits,
       target_stock_units: targetStockUnits,
       counted_in_transit: inTransit,
-      snapshot_date: inventory?.snapshotDate || horizonStart,
+      snapshot_date: snapshotDate,
       seller_sku_resolved: sellerSku,
       platform: "TikTok",
       unit_cogs: getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
@@ -1040,12 +1489,32 @@ export async function runHostedPlanning(params: {
       } else {
         const firstOfMonth = new Date(Date.UTC(planningYear, month - 1, 1));
         const days = endOfMonth(firstOfMonth).getUTCDate();
-        const totalMonthUnits = (totalSalesUnits / baselineDays) * days * (1 + ((monthSettings[key]?.upliftPct ?? asNumber(workspace.defaults.forecastDefaults[key])) / 100));
+        const monthStart = formatDate(firstOfMonth);
+        const monthEnd = formatDate(endOfMonth(firstOfMonth));
+        const monthUpliftFactor = 1 + ((monthSettings[key]?.upliftPct ?? asNumber(workspace.defaults.forecastDefaults[key])) / 100);
+        const monthCampaignFactor = campaignAverageLiftFactor(campaigns, monthStart, monthEnd);
+        const totalMonthUnits = (totalSalesUnits / baselineDays) * days * monthUpliftFactor * monthCampaignFactor;
         const normalizedMonthMix = normalizeMixMap(monthSettings[key]?.productMix || {});
-        const mixShare = Object.keys(normalizedMonthMix).length
-          ? (normalizedMonthMix[productName] || 0)
-          : (futureMix[productName] || 0);
-        row[key] = totalMonthUnits * mixShare;
+        const plan = launchPlanByProduct.get(productName);
+        if (plan?.launchDate) {
+          const activeDays = overlapDaysInclusive(monthStart, monthEnd, plan.launchDate, plan.endDate || "9999-12-31");
+          if (activeDays <= 0) {
+            row[key] = 0;
+          } else {
+            const proxyName = cleanText(plan.proxyProductName) || productName;
+            const proxyMixShare = Object.keys(normalizedMonthMix).length
+              ? (normalizedMonthMix[proxyName] || 0)
+              : (futureMix[proxyName] || 0);
+            const proxyMonthUnits = totalMonthUnits * proxyMixShare;
+            const strength = asNumber(plan.launchStrengthPct) > 0 ? asNumber(plan.launchStrengthPct) / 100 : 1;
+            row[key] = proxyMonthUnits * strength * (activeDays / days);
+          }
+        } else {
+          const mixShare = Object.keys(normalizedMonthMix).length
+            ? (normalizedMonthMix[productName] || 0)
+            : (futureMix[productName] || 0);
+          row[key] = totalMonthUnits * mixShare;
+        }
       }
       row.year_total_units = asNumber(row.year_total_units) + asNumber(row[key]);
     }
@@ -1082,11 +1551,13 @@ export async function runHostedPlanning(params: {
       mix_pct: row.mix_pct,
       sales_mix_pct: row.sales_mix_pct,
       gross_sales_in_baseline: row.gross_sales_in_baseline,
+      net_gross_sales_in_baseline: row.net_gross_sales_in_baseline,
       unit_cogs: row.unit_cogs,
       estimated_cogs: row.estimated_cogs,
       forecast_units: monthRows.find((monthRow) => monthRow.product_name === row.product_name)?.year_total_units || 0,
     })),
   };
+  const skuSalesSummary = buildSkuSalesSummary(state.skuSales, baselineStart, baselineEnd);
 
   return {
     ok: true,
@@ -1105,6 +1576,7 @@ export async function runHostedPlanning(params: {
     },
     monthlyPlan,
     productMix,
+    skuSalesSummary,
     historicalTrend: buildHistoricalTrend(productMonthly, planningYear),
     launchPlanning: buildLaunchPlanning(
       state.launchPlans,
@@ -1175,16 +1647,67 @@ export async function saveHostedDemandUpload(
     platform?: string;
     rawRowCount?: number;
     usableRowCount?: number;
+    writeAudit?: boolean;
   } = {},
 ) {
-  const normalizedRows = normalizeUploadedDemandRows(rows);
+  const skuMappings = await loadTikTokSkuMappings();
+  const mappedRows = expandMappedDemandRows(rows, skuMappings);
+  const normalizedRows = normalizeUploadedDemandRows(mappedRows);
   if (!normalizedRows.length) {
     throw new Error("No usable planning rows were found in the uploaded file.");
   }
 
   const uploadedDates = uniqueSorted(normalizedRows.map((row) => row.date));
+  let skuRowsWritten = 0;
+  const skuSalesRows = collectionName === "planningDemandDaily" ? buildSkuSalesSummaryRows(rows, skuMappings) : [];
+
+  if (usesLocalPlannerData()) {
+    await saveLocalDemandDocs(collectionName, normalizedRows, uploadedDates);
+    if (skuSalesRows.length) {
+      await saveLocalSkuSalesDocs(skuSalesRows, uniqueSorted(skuSalesRows.map((row) => row.date)));
+      skuRowsWritten = skuSalesRows.length;
+    }
+
+    if (meta.writeAudit !== false) {
+      // Keep a tiny local "last upload" audit so the UI can show date coverage without touching Firestore.
+      try {
+        const uploadType = collectionName === "planningSamplesDaily" ? "samples" : "orders";
+        const uploadAudit: UploadAuditDoc = {
+          uploadType,
+          platform: meta.platform || normalizedRows[0]?.platform || "TikTok",
+          rawRowCount: asNumber(meta.rawRowCount),
+          usableRowCount: asNumber(meta.usableRowCount || rows.length),
+          rowsWritten: normalizedRows.length,
+          uploadedDates,
+          firstDate: uploadedDates[0] || null,
+          lastDate: uploadedDates.at(-1) || null,
+          uploadedAt: new Date().toISOString(),
+        };
+        const auditPath = uploadType === "orders" ? LOCAL_UPLOAD_AUDIT_ORDERS_FILE : LOCAL_UPLOAD_AUDIT_SAMPLES_FILE;
+        await writeFile(auditPath, JSON.stringify(uploadAudit, null, 2), "utf8");
+      } catch {
+        // Ignore audit write failures in environments where the filesystem is read-only.
+      }
+    }
+
+    snapshotStateCache = null;
+    return {
+      uploadedDates,
+      rowsWritten: normalizedRows.length,
+      skuRowsWritten,
+      dataSource: "local",
+    };
+  }
+
   await deleteDocsByDates(collectionName, "date", uploadedDates);
   await writeDemandDocs(collectionName, normalizedRows);
+
+  if (collectionName === "planningDemandDaily") {
+    const skuSalesDates = uniqueSorted(skuSalesRows.map((row) => row.date));
+    await deleteDocsByDates("planningSkuSalesDaily", "date", skuSalesDates);
+    await writeSkuSalesDocs(skuSalesRows);
+    skuRowsWritten = skuSalesRows.length;
+  }
 
   const uploadType = collectionName === "planningSamplesDaily" ? "samples" : "orders";
   const uploadAudit: UploadAuditDoc = {
@@ -1198,13 +1721,54 @@ export async function saveHostedDemandUpload(
     lastDate: uploadedDates.at(-1) || null,
     uploadedAt: new Date().toISOString(),
   };
-  await getFirebaseAdminDb().collection("planningUploadAudit").doc(uploadType).set(uploadAudit, { merge: true });
+  if (meta.writeAudit !== false) {
+    await getFirebaseAdminDb().collection("planningUploadAudit").doc(uploadType).set(uploadAudit, { merge: true });
+  }
 
   liveStateCache = null;
   return {
     uploadedDates,
     rowsWritten: normalizedRows.length,
+    skuRowsWritten,
   };
+}
+
+export async function finalizeHostedDemandUploadAudit(args: {
+  uploadType: "orders" | "samples";
+  platform?: string;
+  rawRowCount?: number;
+  usableRowCount?: number;
+  rowsWritten?: number;
+  skuRowsWritten?: number;
+  uploadedDates: string[];
+}) {
+  const uploadedDates = uniqueSorted(args.uploadedDates || []);
+  const uploadAudit: UploadAuditDoc = {
+    uploadType: args.uploadType,
+    platform: cleanText(args.platform) || "TikTok",
+    rawRowCount: asNumber(args.rawRowCount),
+    usableRowCount: asNumber(args.usableRowCount),
+    rowsWritten: asNumber(args.rowsWritten),
+    uploadedDates,
+    firstDate: uploadedDates[0] || null,
+    lastDate: uploadedDates.at(-1) || null,
+    uploadedAt: new Date().toISOString(),
+  };
+
+  if (usesLocalPlannerData()) {
+    try {
+      const auditPath = args.uploadType === "orders" ? LOCAL_UPLOAD_AUDIT_ORDERS_FILE : LOCAL_UPLOAD_AUDIT_SAMPLES_FILE;
+      await writeFile(auditPath, JSON.stringify(uploadAudit, null, 2), "utf8");
+    } catch {
+      // ignore
+    }
+    snapshotStateCache = null;
+    return { ok: true, dataSource: "local", uploadAudit };
+  }
+
+  await getFirebaseAdminDb().collection("planningUploadAudit").doc(args.uploadType).set(uploadAudit, { merge: true });
+  liveStateCache = null;
+  return { ok: true, dataSource: "live", uploadAudit };
 }
 
 export async function syncHostedInventorySnapshot() {

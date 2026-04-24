@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { getHostedWorkspace, runHostedPlanning, syncHostedInventorySnapshot } from "@/lib/hosted-planner";
+import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
+import { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
+    const unauthorized = await requireSettingsAuth(request);
+    if (unauthorized) return unauthorized;
     const inventorySync = await syncHostedInventorySnapshot();
     const workspace = await getHostedWorkspace({ forceRefresh: true });
     const plan = await runHostedPlanning(

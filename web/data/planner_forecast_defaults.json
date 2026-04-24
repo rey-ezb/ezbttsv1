@@ -1,14 +1,14 @@
 {
   "months": {
     "2026-05": {
-      "upliftPct": 30,
+      "upliftPct": 80,
       "productMix": {
-        "Birria Bomb 2-Pack": 63.9,
-        "Chile Colorado Bomb 2-Pack": 0,
-        "Pozole Bomb 2-Pack": 7.2,
-        "Pozole Verde Bomb 2-Pack": 26,
-        "Tinga Bomb 2-Pack": 2.2,
+        "Birria Bomb 2-Pack": 63.8,
         "Brine Bomb": 0.2,
+        "Chile Colorado Bomb 2-Pack": 26,
+        "Pozole Bomb 2-Pack": 7.2,
+        "Pozole Verde Bomb 2-Pack": 0,
+        "Tinga Bomb 2-Pack": 2.2,
         "Variety Pack": 0.6
       }
     },
@@ -19,12 +19,13 @@
     "2026-06": {
       "upliftPct": 40,
       "productMix": {
-        "Birria Bomb 2-Pack": 0.6679999999999999,
-        "Pozole Bomb 2-Pack": 0.141,
-        "Tinga Bomb 2-Pack": 0.039,
-        "Pozole Verde Bomb 2-Pack": 0.132,
-        "Brine Bomb": 0.004,
-        "Variety Pack": 0.016
+        "Birria Bomb 2-Pack": 66.8,
+        "Chile Colorado Bomb 2-Pack": 13.2,
+        "Pozole Bomb 2-Pack": 14.1,
+        "Pozole Verde Bomb 2-Pack": 0,
+        "Tinga Bomb 2-Pack": 3.9,
+        "Brine Bomb": 0.4,
+        "Variety Pack": 1.6
       }
     },
     "2026-11": {
