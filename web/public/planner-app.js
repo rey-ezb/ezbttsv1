@@ -3282,13 +3282,13 @@ function renderLaunchPlanning(payload) {
   const scenarioColumns = [
     ["Product", "product_name"],
     ["Committed units", "launch_units_committed"],
-    ["Target cover weeks", "launch_cover_weeks_target"],
+    ["Target cover (w/d)", "launch_cover_weeks_target"],
     ["Low daily velocity", "low_daily_velocity"],
     ["Base daily velocity", "base_daily_velocity"],
     ["High daily velocity", "high_daily_velocity"],
-    ["Low cover weeks", "low_weeks_of_cover"],
-    ["Base cover weeks", "base_weeks_of_cover"],
-    ["High cover weeks", "high_weeks_of_cover"],
+    ["Low cover (w/d)", "low_weeks_of_cover"],
+    ["Base cover (w/d)", "base_weeks_of_cover"],
+    ["High cover (w/d)", "high_weeks_of_cover"],
     ["Base send units", "base_send_units"],
   ];
   launchScenariosHead.innerHTML = `<tr>${scenarioColumns.map(([label]) => `<th>${label}</th>`).join("")}</tr>`;
@@ -3298,7 +3298,12 @@ function renderLaunchPlanning(payload) {
   }
   launchScenariosBody.innerHTML = rows.map((row) => `<tr>${scenarioColumns.map(([, key]) => {
     if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
-    if (key === "launch_cover_weeks_target" || key.endsWith("weeks_of_cover")) return `<td>${row[key] === null || row[key] === undefined ? "—" : number(row[key])}</td>`;
+    if (key === "launch_cover_weeks_target" || key.endsWith("weeks_of_cover")) {
+      const weeks = row[key];
+      if (weeks === null || weeks === undefined) return `<td>—</td>`;
+      const days = Math.round(Number(weeks) * 7);
+      return `<td>${number(weeks)}w (${integer(days)}d)</td>`;
+    }
     return `<td>${number(row[key])}</td>`;
   }).join("")}</tr>`).join("");
 }
@@ -4313,10 +4318,19 @@ async function fetchJson(url, options) {
 function getStoredPlannerDataSource() {
   try {
     const stored = window.localStorage.getItem(PLANNER_DATA_SOURCE_STORAGE_KEY);
-    return stored === "live" ? "live" : "local";
+    if (stored === "live" || stored === "local") return stored;
   } catch {
-    return "local";
+    // ignore storage failures
   }
+  const host = String(window.location.hostname || "").toLowerCase();
+  const isLoopbackIpv4 = (value) => {
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return false;
+    const parts = value.split(".").map((part) => Number(part));
+    if (parts.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) return false;
+    return parts[0] === 127;
+  };
+  const isLocalHost = host === "localhost" || host === "::1" || isLoopbackIpv4(host);
+  return isLocalHost ? "local" : "live";
 }
 
 function updatePlannerDataSourceCopy(workspace = null) {
@@ -4333,9 +4347,20 @@ function updatePlannerDataSourceCopy(workspace = null) {
   const liveSyncNote = plannerDataSourceMode === "live"
     ? "Live inventory sync is available."
     : "Live inventory sync is disabled in local-files mode.";
+  const host = String(window.location.hostname || "").toLowerCase();
+  const isLoopbackIpv4 = (value) => {
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return false;
+    const parts = value.split(".").map((part) => Number(part));
+    if (parts.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) return false;
+    return parts[0] === 127;
+  };
+  const isLocalSite = host === "localhost" || host === "::1" || isLoopbackIpv4(host);
+  const hostedLocalNote = plannerDataSourceMode === "local" && !isLocalSite
+    ? "Note: Local-files mode may not persist changes on the hosted site. Use Firestore to keep settings across browsers."
+    : "";
   plannerDataSourceCopy.textContent = actualSource
-    ? `Preview is set to ${requestedLabel}. Current load came from ${actualLabel}${actualDetail ? ` (${actualDetail})` : ""}. ${liveSyncNote}`
-    : `Preview is set to ${requestedLabel}. ${liveSyncNote}`;
+    ? `Preview is set to ${requestedLabel}. Current load came from ${actualLabel}${actualDetail ? ` (${actualDetail})` : ""}. ${liveSyncNote} ${hostedLocalNote}`.trim()
+    : `Preview is set to ${requestedLabel}. ${liveSyncNote} ${hostedLocalNote}`.trim();
   if (updateLiveInventoryBtn instanceof HTMLButtonElement) {
     updateLiveInventoryBtn.disabled = plannerDataSourceMode !== "live";
     updateLiveInventoryBtn.title = plannerDataSourceMode === "live" ? "" : "Switch preview data source to Firestore to use live inventory sync.";
