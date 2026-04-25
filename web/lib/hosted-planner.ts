@@ -1116,6 +1116,7 @@ function buildMonthlyActuals(demand: DemandDoc[]) {
   const monthTotals = new Map<string, MonthSummary>();
   const monthMix = new Map<string, Record<string, number>>();
   const productMonthly = new Map<string, Map<string, number>>();
+  const productMonthlyGross = new Map<string, Map<string, number>>();
 
   for (const row of demand) {
     const key = monthKey(row.date);
@@ -1131,6 +1132,10 @@ function buildMonthlyActuals(demand: DemandDoc[]) {
     const product = productMonthly.get(row.product_name) || new Map<string, number>();
     product.set(key, (product.get(key) || 0) + asNumber(row.net_units));
     productMonthly.set(row.product_name, product);
+
+    const productGross = productMonthlyGross.get(row.product_name) || new Map<string, number>();
+    productGross.set(key, (productGross.get(key) || 0) + asNumber(row.gross_sales));
+    productMonthlyGross.set(row.product_name, productGross);
   }
 
   const orderedKeys = Array.from(monthTotals.keys()).sort();
@@ -1153,7 +1158,7 @@ function buildMonthlyActuals(demand: DemandDoc[]) {
     );
   }
 
-  return { monthlyActuals, monthlyActualMix, productMonthly };
+  return { monthlyActuals, monthlyActualMix, productMonthly, productMonthlyGross };
 }
 
 function latestInventoryByProduct(inventory: InventoryDoc[]) {
@@ -1699,17 +1704,22 @@ export async function runHostedPlanning(params: {
     return ((rank[a.status] ?? 99) - (rank[b.status] ?? 99)) || (b.recommended_order_units - a.recommended_order_units);
   });
 
-  const { monthlyActuals, monthlyActualMix, productMonthly } = buildMonthlyActuals(state.demand);
+  const { monthlyActuals, monthlyActualMix, productMonthly, productMonthlyGross } = buildMonthlyActuals(state.demand);
   const latestActualMonthKey = Object.keys(monthlyActuals).sort().at(-1) || `${planningYear}-01`;
   const latestDemandDate = state.demand.at(-1)?.date || baselineEnd;
   const latestDemandMonthEnd = endOfMonth(toDate(latestDemandDate));
   const latestActualMonthIsPartial = latestDemandDate < formatDate(latestDemandMonthEnd);
   const monthRows = productNames.map((productName) => {
-    const row: Record<string, number | string> = { product_name: productName, year_total_units: 0, year_mix_pct: 0 };
+    const row: Record<string, unknown> = { product_name: productName, year_total_units: 0, year_mix_pct: 0 };
+    const grossRow: Record<string, number | string> = { product_name: productName, year_total_gross: 0 };
+    const avgGrossPerUnit = asNumber(demandByProduct.get(productName)?.grossSales) > 0 && asNumber(demandByProduct.get(productName)?.salesUnits) > 0
+      ? asNumber(demandByProduct.get(productName)?.grossSales) / asNumber(demandByProduct.get(productName)?.salesUnits)
+      : 0;
     for (let month = 1; month <= 12; month += 1) {
       const key = `${planningYear}-${String(month).padStart(2, "0")}`;
       if (key <= latestActualMonthKey) {
         row[key] = productMonthly.get(productName)?.get(key) || 0;
+        grossRow[key] = productMonthlyGross.get(productName)?.get(key) || 0;
       } else {
         const firstOfMonth = new Date(Date.UTC(planningYear, month - 1, 1));
         const days = endOfMonth(firstOfMonth).getUTCDate();
@@ -1724,6 +1734,7 @@ export async function runHostedPlanning(params: {
           const activeDays = overlapDaysInclusive(monthStart, monthEnd, plan.launchDate, plan.endDate || "9999-12-31");
           if (activeDays <= 0) {
             row[key] = 0;
+            grossRow[key] = 0;
           } else {
             const proxyName = cleanText(plan.proxyProductName) || productName;
             const mixShare = Object.keys(normalizedMonthMix).length
@@ -1732,16 +1743,20 @@ export async function runHostedPlanning(params: {
             const launchMonthUnits = totalMonthUnits * mixShare;
             const strength = asNumber(plan.launchStrengthPct) > 0 ? asNumber(plan.launchStrengthPct) / 100 : 1;
             row[key] = launchMonthUnits * strength * (activeDays / days);
+            grossRow[key] = asNumber(row[key]) * avgGrossPerUnit;
           }
         } else {
           const mixShare = Object.keys(normalizedMonthMix).length
             ? (normalizedMonthMix[productName] || 0)
             : (futureMix[productName] || 0);
           row[key] = totalMonthUnits * mixShare;
+          grossRow[key] = asNumber(row[key]) * avgGrossPerUnit;
         }
       }
       row.year_total_units = asNumber(row.year_total_units) + asNumber(row[key]);
+      grossRow.year_total_gross = asNumber(grossRow.year_total_gross) + asNumber(grossRow[key]);
     }
+    row.monthly_gross = grossRow;
     return row;
   });
 

@@ -187,8 +187,8 @@ const PLANNER_DATA_SOURCE_STORAGE_KEY = "demand-planning-preview-data-source";
 const PAGE_CONTENT = {
   planning: {
     chip: "Demand Planning",
-    title: "Lean planner, separate surface.",
-    lead: "This planner uses your real core products, rolls bundle sales into them, and helps you decide what to reorder next.",
+    title: "Demand planning, decision-ready.",
+    lead: "This planner turns your real product demand, inventory, inbound, and forecast plan into a clear reorder recommendation.",
   },
   campaigns: {
     chip: "Marketing",
@@ -1060,7 +1060,7 @@ function chunkRowsByDate(rows, maxRows = 1500) {
 const HEADER_HELP = {
   "Status": "Planner status summary. Spoilage Risk is currently estimated as: projected_supply_days = (on_hand + in_transit + recommended_order_units) / forecast_daily_demand. The row is marked Spoilage Risk when projected_supply_days is greater than shelf_life_months * 30. This is not batch-aware, so it does not distinguish older warehouse stock from newer fresh inventory.",
   "Baseline velocity": "Average units/day from the selected baseline window. Computed as units_used_for_velocity / days_used_for_velocity. Viral smoothing and intermittent sales can change days used.",
-  "Plan velocity": "Units/day used for the planning period (month plan uplift + mix, plus any campaign lifts). This is the run-rate used for cover, stockout dates, and reorder math.",
+  "Plan velocity": "Units/day assumed for the selected planning month after plan uplift, mix, and campaign lifts. This is the scenario run-rate used for cover, stockout dates, and reorder math.",
   "Order units": "Actual units sold in the selected baseline date range.",
   "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on, the planner can remove the highest-selling days from the baseline window before calculating demand velocity (tune the thresholds in Settings).",
   "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
@@ -1076,14 +1076,14 @@ const HEADER_HELP = {
   "Transit gap": "Estimated number of days where on-hand inventory runs out before the current inbound ETA arrives.",
   "Current supply": "Current supply used by the planner: on hand + in transit. This is not time-phased by ETA; Transit gap is the signal that inbound arrives too late.",
   "On-hand cover (recent)": "How long on-hand inventory lasts at the baseline (history) velocity. This is the easiest sanity-check for what you have right now.",
-  "Total cover (plan)": "How long current supply (on hand + in transit) lasts at the plan velocity. This is what the planner uses for stockout + reorder math.",
+  "Total cover (plan)": "How long current supply (on hand + in transit) lasts if demand happens at the planned rate. This is the main planning scenario used for stockout and reorder math.",
   "Safety stock": "Extra units kept as protection before the next order should arrive.",
-  "Projected stockout date": "Projected date you run out if demand follows the plan velocity. Shows total-supply stockout, plus on-hand-only stockout (OH) when it differs.",
-  "Order-by date": "Latest date to place the order so lead time and safety stock are covered (also shows a day countdown).",
-  "Order today": "Recommended units to order today after supply, lead time, and safety stock are applied.",
+  "Projected stockout date": "Projected date you run out if demand follows the planned rate. Shows total-supply stockout, plus on-hand-only stockout (OH) when it differs.",
+  "Order-by date": "Latest date to place the next order so lead time and safety stock are covered if the selected month plan happens as expected.",
+  "Order now": "Recommended units to order now if the selected month plan happens as expected, after supply, lead time, and safety stock are applied.",
   "Capital needed": "Estimated cash needed for the recommended order: recommended_order_units * unit_cogs.",
-  "Reorder": "Action view: shows what to order and by when.",
-  "Status": "Status view: shows coverage, stockout timing, and what is driving the recommendation.",
+  "Recommended order": "Action view: shows the suggested order quantity and timing under the selected planning scenario.",
+  "Drivers": "Explanation view: shows coverage, stockout timing, and the main drivers behind the recommended unit count.",
   "Units in baseline window": "Actual units sold during the selected baseline date range.",
   "Baseline unit share %": "This product's share of all baseline units sold.",
   "Baseline sales share %": "This product's share of all baseline gross sales.",
@@ -1093,15 +1093,24 @@ const HEADER_HELP = {
   "Year total units": "Total units for this product across the selected plan year.",
 };
 
+const HEADER_SUBLABEL = {
+  "Baseline velocity": "units/day",
+  "Plan velocity": "units/day",
+};
+
 function renderHeaderCell(label, options = {}) {
   const help = options.help ?? HEADER_HELP[label];
+  const subLabel = options.subLabel ?? HEADER_SUBLABEL[label];
   if (!help) {
     return `<th>${escapeHtml(label)}</th>`;
   }
   return `
     <th>
       <span class="th-help">
-        <span>${escapeHtml(label)}</span>
+        <span class="th-label-stack">
+          <span>${escapeHtml(label)}</span>
+          ${subLabel ? `<span class="th-sub-label">${escapeHtml(subLabel)}</span>` : ""}
+        </span>
         <button type="button" class="th-help-trigger" data-help="${escapeHtml(help)}" aria-label="More info about ${escapeHtml(label)}">?</button>
       </span>
     </th>
@@ -2497,7 +2506,7 @@ function renderResults(payload) {
       ? [
         ["Product", "product_name"],
         ["Status", "status"],
-        ["Order today", "recommended_order_units"],
+        ["Order now", "recommended_order_units"],
         ["Capital needed", "capital_required"],
         ["Order-by date", "reorder_date"],
         ["Projected stockout date", "projected_stockout_date"],
@@ -2509,7 +2518,7 @@ function renderResults(payload) {
       : [
         ["Product", "product_name"],
         ["Status", "status"],
-        ["Order today", "recommended_order_units"],
+        ["Order now", "recommended_order_units"],
         ["Capital needed", "capital_required"],
         ["Order-by date", "reorder_date"],
         ["Projected stockout date", "projected_stockout_date"],
@@ -2590,15 +2599,16 @@ function renderResults(payload) {
       let deltaLabel = "";
       if (baselineVelocity !== null && baselineVelocity > 0) {
         const delta = (planVelocity - baselineVelocity) / baselineVelocity;
-        deltaLabel = `${delta >= 0 ? "+" : ""}${percent(delta)} vs baseline`;
+        const pctText = `${delta >= 0 ? "+" : ""}${percent(delta)}`;
+        deltaLabel = `<span class="cell-split-meta-strong">${escapeHtml(pctText)}</span> vs<wbr> baseline`;
       } else if (baselineVelocity === 0) {
-        deltaLabel = "n/a vs baseline";
+        deltaLabel = "n/a vs<wbr> baseline";
       }
       if (!deltaLabel) return escapeHtml(number(planVelocity));
       return `
-        <span class="cell-split cell-split-stacked">
+        <span class="cell-split cell-split-inline cell-split-inline-middle">
           <span class="cell-split-main">${escapeHtml(number(planVelocity))}</span>
-          <span class="cell-split-meta">${escapeHtml(deltaLabel)}</span>
+          <span class="cell-split-meta">${deltaLabel}</span>
         </span>
       `.trim();
     }
@@ -2616,10 +2626,11 @@ function renderResults(payload) {
       const title = showOnHand
         ? "Projected stockout includes in-transit supply. 'On-hand only' ignores in-transit."
         : "Projected stockout uses plan velocity and includes in-transit supply.";
+      const safeMeta = String(meta || "").replace("On-hand only:", "On-hand only:<wbr>");
       return `
-        <span class="cell-split cell-split-stacked" title="${escapeHtml(title)}">
+        <span class="cell-split cell-split-inline" title="${escapeHtml(title)}">
           <span class="cell-split-main">${escapeHtml(date)}</span>
-          ${meta ? `<span class="cell-split-meta">${escapeHtml(meta)}</span>` : ""}
+          ${meta ? `<span class="cell-split-meta">${safeMeta}</span>` : ""}
         </span>
       `.trim();
     }
@@ -2732,12 +2743,12 @@ function renderMonthlyPlan(payload) {
   const currentMonthKey = (actualMtdMonth?.key || months.find((month) => month.mode === "forecast")?.key || months[0]?.key || null);
   if (monthlyPlanCopy) {
     monthlyPlanCopy.textContent = actualMtdMonth
-      ? `Shows closed actual months for ${actualMonths.join(", ")}${actualMonths.length ? ", " : ""}plus ${actualMtdMonth.label} month-to-date through ${payload.latestDemandDate}. Each cell shows units first, then that product's share of the month total. Forecast month units already include your saved uplift.`
+      ? `Shows closed actual months for ${actualMonths.join(", ")}${actualMonths.length ? ", " : ""}plus ${actualMtdMonth.label} month-to-date through ${payload.latestDemandDate}. Each product cell shows units first, then share of month demand. Gross sales sit in their own totals row, with a full-year gross total at the end. Forecast months already include your saved uplift.`
       : actualMonths.length
-        ? `Shows actual monthly units for ${actualMonths.join(", ")} in ${year}. Each cell shows units first, then that product's share of the month total. Later months use your saved month plans.`
-        : `Shows planned monthly units for ${year} using the selected baseline mix and any saved month-specific overrides. Each cell shows units first, then that product's share of the month total.`;
+        ? `Shows actual monthly demand for ${actualMonths.join(", ")} in ${year}. Each product cell shows units first, then share of month demand. Gross sales sit in their own totals row, with a full-year gross total at the end. Later months use your saved month plans.`
+        : `Shows planned monthly demand for ${year} using the selected baseline mix and any saved month-specific overrides. Each product cell shows units first, then share of month demand. Gross sales sit in their own totals row, with a full-year gross total at the end.`;
   }
-  const columns = [["Product", "product_name"], ...months.map((month) => [month.label, month.key]), [`${year} share %`, "year_mix_pct"], [`${year} total units`, "year_total_units"]];
+  const columns = [["Product", "product_name"], ...months.map((month) => [month.label, month.key]), [`${year} share %`, "year_mix_pct"], [`${year} total units`, "year_total_units"], [`${year} gross`, "year_total_gross"]];
   const modeGroups = buildMonthModeGroups(months);
   const modeRow = modeGroups.map((group) => `
     <th class="table-mode-group table-mode-group-${group.mode}" colspan="${group.count}">
@@ -2759,7 +2770,7 @@ function renderMonthlyPlan(payload) {
     <tr class="table-mode-row">
       <th class="table-mode-anchor"></th>
       ${modeRow}
-      <th class="table-mode-spacer" colspan="2"></th>
+      <th class="table-mode-spacer" colspan="3"></th>
     </tr>
   `;
   if (!rows.length) {
@@ -2775,6 +2786,15 @@ function renderMonthlyPlan(payload) {
     return acc;
   }, {});
   const monthTotals = Object.fromEntries(monthKeys.map((key) => [key, Number(totals[key] || 0)]));
+  const monthGrossTotals = Object.fromEntries(monthKeys.map((key) => [
+    key,
+    rows.reduce((sum, row) => sum + Number(row?.monthly_gross?.[key] || 0), 0),
+  ]));
+  const rowYearGrossTotals = new Map(rows.map((row) => [
+    row.product_name || "",
+    monthKeys.reduce((sum, key) => sum + Number(row?.monthly_gross?.[key] || 0), 0),
+  ]));
+  const yearGrossTotal = Array.from(rowYearGrossTotals.values()).reduce((sum, value) => sum + Number(value || 0), 0);
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => {
     if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
     if (key === "year_mix_pct") return `<td>${percent(row[key])}</td>`;
@@ -2794,6 +2814,7 @@ function renderMonthlyPlan(payload) {
       `;
     }
     if (key === "year_total_units") return `<td>${integer(row[key])}</td>`;
+    if (key === "year_total_gross") return `<td>${moneyPrecise(rowYearGrossTotals.get(row.product_name || "") || 0)}</td>`;
     return `<td>${number(row[key])}</td>`;
   }).join("")}</tr>`).join("");
   const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => {
@@ -2803,7 +2824,7 @@ function renderMonthlyPlan(payload) {
       const meta = monthMeta[key] || {};
       const isCurrent = Boolean(currentMonthKey && key === currentMonthKey);
       return `
-        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(totals[key])} - Share 100%">
+        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(totals[key])} - Gross ${moneyPrecise(monthGrossTotals[key] || 0)} - Share 100%">
           <div class="month-value-cell is-total" style="--share:1">
             <span class="month-value-number">${integer(totals[key])}</span>
             <span class="month-value-share">100%</span>
@@ -2812,9 +2833,26 @@ function renderMonthlyPlan(payload) {
       `;
     }
     if (key === "year_total_units") return `<td>${integer(totals[key])}</td>`;
+    if (key === "year_total_gross") return `<td>${moneyPrecise(yearGrossTotal)}</td>`;
     return `<td>${number(totals[key])}</td>`;
   }).join("")}</tr>`;
-  monthlyPlanBody.innerHTML = `${bodyRows}${totalsRow}`;
+  const grossRow = `<tr class="totals-row gross-row">${columns.map(([, key]) => {
+    if (key === "product_name") return "<td>Gross sales</td>";
+    if (key === "year_mix_pct") return "<td>—</td>";
+    if (monthKeys.includes(key)) {
+      const meta = monthMeta[key] || {};
+      const isCurrent = Boolean(currentMonthKey && key === currentMonthKey);
+      return `
+        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Gross sales ${moneyPrecise(monthGrossTotals[key] || 0)}">
+          <span class="month-value-gross-only">${moneyPrecise(monthGrossTotals[key] || 0)}</span>
+        </td>
+      `;
+    }
+    if (key === "year_total_units") return "<td>—</td>";
+    if (key === "year_total_gross") return `<td>${moneyPrecise(yearGrossTotal)}</td>`;
+    return "<td>—</td>";
+  }).join("")}</tr>`;
+  monthlyPlanBody.innerHTML = `${bodyRows}${totalsRow}${grossRow}`;
 }
 
 function renderProductMix(payload) {

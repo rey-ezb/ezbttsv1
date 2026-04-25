@@ -155,6 +155,9 @@
                     <div class="forecast-inline-copy" id="forecast-summary-copy"></div>
                     <button type="button" class="secondary" id="open-forecast-settings">Edit selected month</button>
                   </div>
+                  <div class="planning-intent-note" id="planning-intent-note">
+                    Based on the selected month plan, this is the inventory we should send now so we stay covered through the next few weeks.
+                  </div>
                   <div class="controls-foot">
                     <div class="controls-submit">
                       <button type="submit" class="primary" id="run-planning-btn">Run planning</button>
@@ -228,18 +231,20 @@
           </dialog>
 
           <section class="panel panel-results panel-results-primary glass-sheen">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Results</p>
-                <h2>Reorder recommendations</h2>
-                <p class="panel-subcopy">Cover is shown two ways: on-hand cover uses recent baseline velocity; total cover uses your planned velocity and includes in-transit units. Hover the “?” to see the exact assumptions.</p>
+            <div class="panel-header panel-header-results">
+              <div class="panel-header-title-row">
+                <p class="eyebrow eyebrow-inline">Results</p>
+                <h2>Recommended order</h2>
               </div>
-              <div class="panel-tabs panel-tabs-results" role="tablist" aria-label="Results views">
-                <span class="panel-tabs-label" role="presentation" aria-hidden="true">View</span>
-                <button type="button" class="panel-tab is-active" data-results-tab="reorder" role="tab" aria-selected="true">Reorder</button>
-                <button type="button" class="panel-tab" data-results-tab="status" role="tab" aria-selected="false">Status</button>
+              <div class="panel-header-toolbar">
+                <div class="panel-tabs panel-tabs-results" role="tablist" aria-label="Results views">
+                  <span class="panel-tabs-label" role="presentation" aria-hidden="true">View</span>
+                  <button type="button" class="panel-tab is-active" data-results-tab="reorder" role="tab" aria-selected="true">Recommended order</button>
+                  <button type="button" class="panel-tab" data-results-tab="status" role="tab" aria-selected="false">Drivers</button>
+                </div>
+                <div class="result-summary" id="result-summary"></div>
               </div>
-              <div class="result-summary" id="result-summary"></div>
+              <p class="panel-subcopy panel-subcopy-callout">Use this as the buying recommendation for the selected month plan. If demand happens at this planned rate, these are the units to order now to stay covered through the next few weeks, with inbound, lead time, and safety stock included.</p>
             </div>
             <div class="table-wrap">
               <table id="results-table" class="data-grid">
@@ -254,9 +259,9 @@
           <section class="panel panel-results panel-results-secondary panel-history glass-sheen">
             <div class="panel-header panel-header-history">
               <div>
-                <p class="eyebrow">Historical Trends</p>
-                <h2>History &amp; planning inputs</h2>
-                <p class="panel-subcopy" id="history-section-copy">Switch between the year plan, forecast starting point, baseline mix, SKU sales, and historical demand without making the page longer.</p>
+                <p class="eyebrow">Planning detail</p>
+                <h2>Demand, mix, and forecast support</h2>
+                <p class="panel-subcopy" id="history-section-copy">Use these views to explain the recommendation: monthly demand plan, forecast starting point, baseline mix, SKU sales, and demand history.</p>
                 <div class="planner-compare-links">
                   <a class="planner-compare-link" id="planner-compare-link" href="/planner.html?plannerVariant=year-jump">Compare with 1-click year view</a>
                   <a class="planner-compare-link" id="planner-current-link" href="/planner.html">Back to current view</a>
@@ -275,19 +280,19 @@
               </div>
             </div>
             <div class="workspace-tab-strip history-tab-strip" id="history-tab-strip">
-              <button type="button" class="workspace-tab is-active" data-history-tab="monthly">Monthly plan</button>
-              <button type="button" class="workspace-tab" data-history-tab="suggested-units">Suggested units</button>
+              <button type="button" class="workspace-tab is-active" data-history-tab="monthly">Monthly demand</button>
+              <button type="button" class="workspace-tab" data-history-tab="suggested-units">Forecast start</button>
               <button type="button" class="workspace-tab" data-history-tab="baseline">Baseline mix</button>
               <button type="button" class="workspace-tab" data-history-tab="sku-sales">SKU sales</button>
-              <button type="button" class="workspace-tab" data-history-tab="trends">Historical trends</button>
-              <button type="button" class="workspace-tab" data-history-tab="launch">Launch scenario</button>
+              <button type="button" class="workspace-tab" data-history-tab="trends">Demand trend</button>
+              <button type="button" class="workspace-tab" data-history-tab="launch">Launch plan</button>
             </div>
             <div class="history-tab-panels">
               <section class="history-tab-panel is-active" data-history-panel="monthly">
                 <div class="panel-header panel-header-inner">
                   <div>
-                    <p class="eyebrow">Year View</p>
-                    <h3>Monthly unit plan</h3>
+                    <p class="eyebrow">Year view</p>
+                    <h3>Monthly demand plan</h3>
                     <p class="panel-subcopy" id="monthly-plan-copy">Shows the selected plan year by month.</p>
                   </div>
                 </div>
