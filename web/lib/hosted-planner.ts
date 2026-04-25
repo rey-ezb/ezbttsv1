@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { usesLocalPlannerData } from "./data-source-mode";
+import { resolvePlannerDataSourceMode, type PlannerDataSourceMode } from "./data-source-mode";
 import { getFirebaseAdminDb } from "./firebase-admin";
 import { getInventorySheetSource, loadLatestInventorySnapshot } from "./inventory-sheet";
 import {
@@ -56,6 +56,7 @@ type ForecastSettingDoc = {
   yearMonth: string;
   upliftPct?: number;
   productMix?: Record<string, number>;
+  productLiftOverrides?: Record<string, number>;
 };
 
 type LaunchPlanDoc = {
@@ -86,6 +87,9 @@ type PlannerSharedSettings = {
     defaultLeadTimeDays: number;
     safetyStockWeeksH1: number; // Jan-Jun
     safetyStockWeeksH2: number; // Jul-Dec
+    viralSmoothingEnabled: boolean;
+    viralSmoothingExcludeTopDays: number;
+    viralSmoothingMinSellingDays: number;
   };
   products: Record<string, PlannerProductSettings>;
 };
@@ -200,6 +204,10 @@ const DEFAULT_PLANNER_PRODUCT_SETTINGS: Record<string, PlannerProductSettings> =
 
 let liveStateCache: { expiresAt: number; value: LoadedState } | null = null;
 let snapshotStateCache: SnapshotState | null = null;
+
+function prefersLocalData(preferredDataSource?: PlannerDataSourceMode | null) {
+  return resolvePlannerDataSourceMode(preferredDataSource) === "local";
+}
 
 export function invalidateHostedPlannerCache() {
   liveStateCache = null;
@@ -441,6 +449,9 @@ function buildDefaultPlannerSettings(): PlannerSharedSettings {
       defaultLeadTimeDays: 8,
       safetyStockWeeksH1: 3,
       safetyStockWeeksH2: 5,
+      viralSmoothingEnabled: true,
+      viralSmoothingExcludeTopDays: 2,
+      viralSmoothingMinSellingDays: 14,
     },
     products: Object.fromEntries(
       Object.entries(DEFAULT_PLANNER_PRODUCT_SETTINGS).map(([productName, setting]) => [
@@ -464,6 +475,9 @@ function normalizePlannerSharedSettings(rawSettings: unknown): PlannerSharedSett
       defaultLeadTimeDays: Math.max(1, asNumber(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
       safetyStockWeeksH1: Math.max(0, asNumber(global.safetyStockWeeksH1) || defaults.global.safetyStockWeeksH1),
       safetyStockWeeksH2: Math.max(0, asNumber(global.safetyStockWeeksH2) || defaults.global.safetyStockWeeksH2),
+      viralSmoothingEnabled: global.viralSmoothingEnabled === undefined ? defaults.global.viralSmoothingEnabled : Boolean(global.viralSmoothingEnabled),
+      viralSmoothingExcludeTopDays: Math.max(0, Math.min(10, Math.floor(asNumber(global.viralSmoothingExcludeTopDays) || defaults.global.viralSmoothingExcludeTopDays))),
+      viralSmoothingMinSellingDays: Math.max(0, Math.min(120, Math.floor(asNumber(global.viralSmoothingMinSellingDays) || defaults.global.viralSmoothingMinSellingDays))),
     },
     products: Object.fromEntries(
       CORE_PRODUCT_NAMES.map((productName) => {
@@ -726,12 +740,13 @@ async function loadBundledState() {
   }
 
   const forecastDefaults = JSON.parse(forecastDefaultsText) as {
-    months?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
+    months?: Record<string, { upliftPct?: number; productMix?: Record<string, number>; productLiftOverrides?: Record<string, number> }>;
   };
   const forecastSettings = Object.entries(forecastDefaults.months || {}).map(([yearMonth, setting]) => ({
     yearMonth,
     upliftPct: asNumber(setting?.upliftPct),
     productMix: setting?.productMix || {},
+    productLiftOverrides: setting?.productLiftOverrides || {},
   }));
   const plannerSettings = normalizePlannerSharedSettings(JSON.parse(plannerSettingsText));
   const ordersAudit = ordersAuditText ? (JSON.parse(ordersAuditText) as UploadAuditDoc) : null;
@@ -786,8 +801,8 @@ async function readCollection<T>(name: string) {
   return snapshot.docs.map((doc) => doc.data() as T);
 }
 
-export async function loadHostedSkuMappingOverrides() {
-  if (usesLocalPlannerData()) {
+export async function loadHostedSkuMappingOverrides(preferredDataSource?: PlannerDataSourceMode | null) {
+  if (prefersLocalData(preferredDataSource)) {
     const localText = await readFile(LOCAL_SKU_MAPPING_OVERRIDE_FILE, "utf8").catch(() => "");
     return parseEditableSkuMappingCsv(localText);
   }
@@ -795,10 +810,10 @@ export async function loadHostedSkuMappingOverrides() {
   return normalizeEditableSkuMappingRows(doc?.rows || []);
 }
 
-export async function saveHostedSkuMappingOverrides(rows: unknown) {
+export async function saveHostedSkuMappingOverrides(rows: unknown, preferredDataSource?: PlannerDataSourceMode | null) {
   const payload = normalizeEditableSkuMappingRows(rows);
 
-  if (usesLocalPlannerData()) {
+  if (prefersLocalData(preferredDataSource)) {
     await writeFile(LOCAL_SKU_MAPPING_OVERRIDE_FILE, stringifyEditableSkuMappingCsv(payload), "utf8");
     snapshotStateCache = null;
     return payload;
@@ -815,7 +830,7 @@ export async function saveHostedSkuMappingOverrides(rows: unknown) {
   return payload;
 }
 
-async function loadTikTokSkuMappings() {
+async function loadTikTokSkuMappings(preferredDataSource?: PlannerDataSourceMode | null) {
   const loaded: Array<{ source: string; mappings: TikTokSkuMapping[] }> = [];
   const errors: string[] = [];
 
@@ -833,11 +848,11 @@ async function loadTikTokSkuMappings() {
   }
 
   try {
-    const overrideRows = await loadHostedSkuMappingOverrides();
+    const overrideRows = await loadHostedSkuMappingOverrides(preferredDataSource);
     if (overrideRows.length) {
       const mappings = parseTiktokSkuMappingCsv(stringifyEditableSkuMappingCsv(overrideRows));
       if (mappings.length) {
-        loaded.push({ source: usesLocalPlannerData() ? LOCAL_SKU_MAPPING_OVERRIDE_FILE : "planningSettings/sku_mapping", mappings });
+        loaded.push({ source: prefersLocalData(preferredDataSource) ? LOCAL_SKU_MAPPING_OVERRIDE_FILE : "planningSettings/sku_mapping", mappings });
       } else {
         errors.push("sku mapping overrides: no usable rows");
       }
@@ -1047,8 +1062,8 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
   return value;
 }
 
-async function loadState(options: { forceRefresh?: boolean } = {}): Promise<LoadedState> {
-  if (usesLocalPlannerData()) {
+async function loadState(options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null } = {}): Promise<LoadedState> {
+  if (prefersLocalData(options.preferredDataSource)) {
     if (options.forceRefresh) {
       snapshotStateCache = null;
     }
@@ -1076,13 +1091,14 @@ async function loadState(options: { forceRefresh?: boolean } = {}): Promise<Load
 
 function buildForecastMaps(forecastSettings: ForecastSettingDoc[]) {
   const defaults: Record<string, number> = {};
-  const settings: Record<string, { upliftPct: number; productMix: Record<string, number> }> = {};
+  const settings: Record<string, { upliftPct: number; productMix: Record<string, number>; productLiftOverrides: Record<string, number> }> = {};
 
   for (const entry of forecastSettings) {
     defaults[entry.yearMonth] = asNumber(entry.upliftPct);
     settings[entry.yearMonth] = {
       upliftPct: asNumber(entry.upliftPct),
       productMix: entry.productMix || {},
+      productLiftOverrides: entry.productLiftOverrides || {},
     };
   }
 
@@ -1183,7 +1199,7 @@ function buildWorkspace(stateInfo: LoadedState) {
       horizonStart: formatDate(horizonStartDate),
       horizonEnd: formatDate(horizonEndDate),
       velocityMode: "sales_only",
-      excludeSpikes: true,
+      excludeSpikes: state.plannerSettings.global.viralSmoothingEnabled ?? true,
       upliftPct: defaults[monthKey(horizonStartDate)] ?? 30,
       leadTimeDays: state.plannerSettings.global.defaultLeadTimeDays,
       safetyRule: `${Math.max(0, asNumber(state.plannerSettings.global.safetyStockWeeksH1))} weeks in Jan-Jun. ${Math.max(
@@ -1200,7 +1216,7 @@ function buildWorkspace(stateInfo: LoadedState) {
   };
 }
 
-export async function getHostedWorkspace(options: { forceRefresh?: boolean } = {}) {
+export async function getHostedWorkspace(options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null } = {}) {
   return buildWorkspace(await loadState(options));
 }
 
@@ -1341,11 +1357,11 @@ export async function runHostedPlanning(params: {
   velocityMode?: string;
   excludeSpikes?: boolean;
   leadTimeDays?: number;
-  monthlyForecastSettings?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
+  monthlyForecastSettings?: Record<string, { upliftPct?: number; productMix?: Record<string, number>; productLiftOverrides?: Record<string, number> }>;
   upliftPct?: number;
   planningYear?: number;
   customSettings?: PlannerSharedSettings;
-}, options: { forceRefresh?: boolean } = {}) {
+}, options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null } = {}) {
   const stateInfo = await loadState(options);
   const state = stateInfo.state;
   const workspace = buildWorkspace(stateInfo);
@@ -1366,7 +1382,7 @@ export async function runHostedPlanning(params: {
   const leadTimeDays = asNumber(params.leadTimeDays ?? globalSettings.defaultLeadTimeDays ?? workspace.defaults.leadTimeDays);
   const monthSettings = params.monthlyForecastSettings || workspace.defaults.forecastSettings;
   const forecastMonthKey = monthKey(horizonStart);
-  const forecastSetting = monthSettings[forecastMonthKey] || { upliftPct: params.upliftPct ?? workspace.defaults.upliftPct, productMix: {} };
+  const forecastSetting = monthSettings[forecastMonthKey] || { upliftPct: params.upliftPct ?? workspace.defaults.upliftPct, productMix: {}, productLiftOverrides: {} };
   const upliftFactor = 1 + (asNumber(forecastSetting.upliftPct) / 100);
   const forecastProductMix = forecastSetting.productMix || {};
 
@@ -1423,6 +1439,8 @@ export async function runHostedPlanning(params: {
     baselineDays,
     velocityMode: normalizedVelocityMode,
     excludeSpikes,
+    excludeSpikesTopDays: asNumber(sharedSettings.global.viralSmoothingExcludeTopDays),
+    excludeSpikesMinSellingDays: asNumber(sharedSettings.global.viralSmoothingMinSellingDays),
   });
 
   const totalSalesUnits = Array.from(demandByProduct.values()).reduce((sum, row) => sum + row.salesUnits, 0);
@@ -1718,56 +1736,66 @@ export async function runHostedPlanning(params: {
   };
 }
 
-export async function saveHostedForecastSetting(monthKeyValue: string, setting: { upliftPct?: number; productMix?: Record<string, number> }) {
+export async function saveHostedForecastSetting(
+  monthKeyValue: string,
+  setting: { upliftPct?: number; productMix?: Record<string, number>; productLiftOverrides?: Record<string, number> },
+  preferredDataSource?: PlannerDataSourceMode | null,
+) {
   const payload = {
     yearMonth: monthKeyValue,
     upliftPct: asNumber(setting.upliftPct),
     productMix: setting.productMix || {},
+    productLiftOverrides: setting.productLiftOverrides || {},
   };
 
-  await getFirebaseAdminDb().collection("forecastSettings").doc(monthKeyValue).set(payload, { merge: true });
-
-  liveStateCache = null;
-  let settings = (await loadState({ forceRefresh: true })).state.forecastSettings;
-
-  try {
-    const fileText = await readFile(FORECAST_DEFAULTS_FILE, "utf8");
-    const filePayload = JSON.parse(fileText) as {
-      months?: Record<string, { upliftPct?: number; productMix?: Record<string, number> }>;
-    };
-    filePayload.months = filePayload.months || {};
-    filePayload.months[monthKeyValue] = {
-      upliftPct: payload.upliftPct,
-      productMix: payload.productMix,
-    };
-    await writeFile(FORECAST_DEFAULTS_FILE, JSON.stringify(filePayload, null, 2), "utf8");
-    snapshotStateCache = null;
-  } catch {
-    // Ignore local snapshot write failures in hosted/serverless environments.
+  if (prefersLocalData(preferredDataSource)) {
+    try {
+      const fileText = await readFile(FORECAST_DEFAULTS_FILE, "utf8");
+      const filePayload = JSON.parse(fileText) as {
+        months?: Record<string, { upliftPct?: number; productMix?: Record<string, number>; productLiftOverrides?: Record<string, number> }>;
+      };
+      filePayload.months = filePayload.months || {};
+      filePayload.months[monthKeyValue] = {
+        upliftPct: payload.upliftPct,
+        productMix: payload.productMix,
+        productLiftOverrides: payload.productLiftOverrides,
+      };
+      await writeFile(FORECAST_DEFAULTS_FILE, JSON.stringify(filePayload, null, 2), "utf8");
+      snapshotStateCache = null;
+    } catch {
+      // Ignore local snapshot write failures in hosted/serverless environments.
+    }
+  } else {
+    await getFirebaseAdminDb().collection("forecastSettings").doc(monthKeyValue).set(payload, { merge: true });
+    liveStateCache = null;
   }
 
+  const settings = (await loadState({ forceRefresh: true, preferredDataSource })).state.forecastSettings;
   return Object.fromEntries(
     settings.map((entry) => [
       entry.yearMonth,
       {
         upliftPct: asNumber(entry.upliftPct),
         productMix: entry.productMix || {},
+        productLiftOverrides: entry.productLiftOverrides || {},
       },
     ]),
   );
 }
 
-export async function saveHostedPlannerSettings(settings: unknown) {
+export async function saveHostedPlannerSettings(settings: unknown, preferredDataSource?: PlannerDataSourceMode | null) {
   const payload = normalizePlannerSharedSettings(settings);
 
-  await getFirebaseAdminDb().collection("planningSettings").doc("shared").set(payload, { merge: true });
-  liveStateCache = null;
-
-  try {
-    await writeFile(PLANNER_SETTINGS_FILE, JSON.stringify(payload, null, 2), "utf8");
-    snapshotStateCache = null;
-  } catch {
-    // Ignore local snapshot write failures in hosted/serverless environments.
+  if (prefersLocalData(preferredDataSource)) {
+    try {
+      await writeFile(PLANNER_SETTINGS_FILE, JSON.stringify(payload, null, 2), "utf8");
+      snapshotStateCache = null;
+    } catch {
+      // Ignore local snapshot write failures in hosted/serverless environments.
+    }
+  } else {
+    await getFirebaseAdminDb().collection("planningSettings").doc("shared").set(payload, { merge: true });
+    liveStateCache = null;
   }
 
   return payload;
@@ -1782,8 +1810,9 @@ export async function saveHostedDemandUpload(
     usableRowCount?: number;
     writeAudit?: boolean;
   } = {},
+  preferredDataSource?: PlannerDataSourceMode | null,
 ) {
-  const skuMappings = await loadTikTokSkuMappings();
+  const skuMappings = await loadTikTokSkuMappings(preferredDataSource);
   const mappedRows = expandMappedDemandRows(rows, skuMappings);
   const normalizedRows = normalizeUploadedDemandRows(mappedRows);
   if (!normalizedRows.length) {
@@ -1794,7 +1823,7 @@ export async function saveHostedDemandUpload(
   let skuRowsWritten = 0;
   const skuSalesRows = collectionName === "planningDemandDaily" ? buildSkuSalesSummaryRows(rows, skuMappings) : [];
 
-  if (usesLocalPlannerData()) {
+  if (prefersLocalData(preferredDataSource)) {
     await saveLocalDemandDocs(collectionName, normalizedRows, uploadedDates);
     if (skuSalesRows.length) {
       await saveLocalSkuSalesDocs(skuSalesRows, uniqueSorted(skuSalesRows.map((row) => row.date)));
@@ -1874,7 +1903,7 @@ export async function finalizeHostedDemandUploadAudit(args: {
   rowsWritten?: number;
   skuRowsWritten?: number;
   uploadedDates: string[];
-}) {
+}, preferredDataSource?: PlannerDataSourceMode | null) {
   const uploadedDates = uniqueSorted(args.uploadedDates || []);
   const uploadAudit: UploadAuditDoc = {
     uploadType: args.uploadType,
@@ -1888,7 +1917,7 @@ export async function finalizeHostedDemandUploadAudit(args: {
     uploadedAt: new Date().toISOString(),
   };
 
-  if (usesLocalPlannerData()) {
+  if (prefersLocalData(preferredDataSource)) {
     try {
       const auditPath = args.uploadType === "orders" ? LOCAL_UPLOAD_AUDIT_ORDERS_FILE : LOCAL_UPLOAD_AUDIT_SAMPLES_FILE;
       await writeFile(auditPath, JSON.stringify(uploadAudit, null, 2), "utf8");
@@ -1904,7 +1933,10 @@ export async function finalizeHostedDemandUploadAudit(args: {
   return { ok: true, dataSource: "live", uploadAudit };
 }
 
-export async function syncHostedInventorySnapshot() {
+export async function syncHostedInventorySnapshot(preferredDataSource?: PlannerDataSourceMode | null) {
+  if (prefersLocalData(preferredDataSource)) {
+    throw new Error("Live inventory sync is only available when Firestore mode is selected.");
+  }
   const sheetSource = getInventorySheetSource();
   const snapshot = await loadLatestInventorySnapshot(sheetSource, "TikTok");
   await deleteDocsByDates("inventorySnapshots", "snapshotDate", [snapshot.snapshotDate]);

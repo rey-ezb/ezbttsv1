@@ -6,8 +6,8 @@
     <title>Demand Planning Preview</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/planner-styles.css?v=20260423c">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/planner-styles.css?v=20260425q">
   </head>
   <body>
     <div class="ambient ambient-one"></div>
@@ -15,23 +15,39 @@
     <div class="shell">
       <aside class="rail glass-sheen" id="app-rail">
         <div class="rail-top">
-          <div class="rail-chip" id="rail-chip">Demand Planning</div>
+          <div class="rail-chip" id="rail-chip">
+            <span class="rail-chip-long">Demand Planning</span>
+            <span class="rail-chip-short" aria-hidden="true">EZ</span>
+          </div>
           <button type="button" class="rail-toggle" id="rail-toggle" aria-expanded="true" aria-controls="app-rail">Collapse</button>
         </div>
-        <h1 id="rail-title">Lean planner, separate surface.</h1>
+        <h1 id="rail-title">Demand planning, simplified.</h1>
         <p class="lead" id="rail-lead">
           This planner uses your 6 real products, rolls bundle sales into them,
           and helps you decide what to reorder next.
         </p>
         <nav class="rail-nav" aria-label="App sections">
-          <button type="button" class="rail-link is-active" data-page-target="planning">Demand Planning</button>
-          <button type="button" class="rail-link" data-page-target="campaigns">Campaigns &amp; Promos</button>
-          <button type="button" class="rail-link" data-page-target="launch-planning">Launch Planning</button>
-          <button type="button" class="rail-link rail-link-soon" data-page-target="kpis">
+          <button type="button" class="rail-link is-active" data-page-target="planning" title="Demand Planning">
+            <span class="rail-link-text">Demand Planning</span>
+            <span class="rail-link-short" aria-hidden="true">PL</span>
+          </button>
+          <button type="button" class="rail-link" data-page-target="campaigns" title="Campaigns &amp; Promos">
+            <span class="rail-link-text">Campaigns &amp; Promos</span>
+            <span class="rail-link-short" aria-hidden="true">PR</span>
+          </button>
+          <button type="button" class="rail-link" data-page-target="launch-planning" title="Launch Planning">
+            <span class="rail-link-text">Launch Planning</span>
+            <span class="rail-link-short" aria-hidden="true">LN</span>
+          </button>
+          <button type="button" class="rail-link rail-link-soon" data-page-target="kpis" title="TikTok KPIs (Coming soon)">
             <span class="rail-link-label">TikTok KPIs</span>
             <span class="rail-link-sub">Coming soon</span>
+            <span class="rail-link-short" aria-hidden="true">KP</span>
           </button>
-          <button type="button" class="rail-link" data-page-target="settings">Settings</button>
+          <button type="button" class="rail-link" data-page-target="settings" title="Settings">
+            <span class="rail-link-text">Settings</span>
+            <span class="rail-link-short" aria-hidden="true">ST</span>
+          </button>
         </nav>
 
         <section class="rail-section">
@@ -121,7 +137,7 @@
                   <label class="checkbox-label">
                     <input type="checkbox" id="exclude-spikes" name="excludeSpikes" checked>
                     <span>Viral outlier smoothing</span>
-                    <span class="tooltip-trigger" title="Exclude the top 2 highest sales days when history is rich enough so viral spikes do not inflate reorder recommendations.">?</span>
+                    <span class="tooltip-trigger" title="When smoothing is on, the planner removes the highest-selling days from the baseline window so viral spikes do not inflate reorder recommendations. Adjust the exact rule in Settings.">?</span>
                   </label>
                   <div class="forecast-inline-block">
                     <span class="forecast-inline-label">Selected month plan</span>
@@ -159,6 +175,16 @@
                 <span class="forecast-status-pill" id="forecast-status-pill">New month setting</span>
                 <span class="forecast-baseline-copy" id="forecast-baseline-copy">Using the current selected baseline window.</span>
               </div>
+              <div class="forecast-dialog-status-row forecast-dialog-copy-row" id="forecast-copy-mix-row">
+                <div class="forecast-copy-control">
+                  <label for="forecast-copy-mix-month">Copy mix from actual month</label>
+                  <div class="forecast-copy-control-row">
+                    <select id="forecast-copy-mix-month"></select>
+                    <button type="button" class="secondary" id="forecast-copy-mix-apply">Copy mix</button>
+                  </div>
+                </div>
+              </div>
+              <p class="forecast-copy-hint" id="forecast-copy-mix-hint">Copy pulls the actual mix for that month from your historical units, then re-balances to 100%. Products with zero units that month stay at 0%.</p>
               <div class="forecast-dialog-grid">
                 <label>Year
                   <input type="number" id="forecast-year-input" step="1" min="2024" max="2035">
@@ -167,11 +193,16 @@
                   <select id="forecast-month-picker"></select>
                 </label>
                 <label>Target uplift vs baseline (%)
+                  <small class="forecast-uplift-suggestion" id="forecast-uplift-suggestion" aria-live="polite"></small>
                   <input type="number" id="forecast-month-uplift" step="0.1">
                 </label>
               </div>
-              <div class="forecast-dialog-copy">
-                Set the expected demand growth compared to your selected baseline period, then choose the product share for that month. If you do not save a custom split, the planner falls back to the selected baseline mix. Product share should add up to 100%.
+              <div class="forecast-helper-card">
+                <p class="forecast-helper-one">
+                  <strong>How to use this:</strong>
+                  <span class="forecast-helper-lead">Set Target uplift or set Lift % per product. Mix should total 100%.</span>
+                  <span id="forecast-lift-guidance">Either set Target uplift, or set Lift % per product (Target uplift auto-calculates).</span>
+                </p>
               </div>
               <div class="forecast-product-mix-inputs" id="forecast-product-mix-inputs"></div>
               <div class="forecast-total-row">
@@ -194,7 +225,7 @@
               <div class="result-summary" id="result-summary"></div>
             </div>
             <div class="table-wrap">
-              <table id="results-table">
+              <table id="results-table" class="data-grid">
                 <thead id="results-head"></thead>
                 <tbody id="results-body">
                   <tr><td colspan="16" class="empty">Loading your planning view.</td></tr>
@@ -243,7 +274,7 @@
                   </div>
                 </div>
                 <div class="table-wrap">
-                  <table id="monthly-plan-table">
+                  <table id="monthly-plan-table" class="data-grid">
                     <thead id="monthly-plan-head"></thead>
                     <tbody id="monthly-plan-body">
                       <tr><td colspan="14" class="empty">Run planning to see Jan to Dec units.</td></tr>
@@ -261,7 +292,7 @@
                   </div>
                 </div>
                 <div class="table-wrap">
-                  <table id="product-mix-table">
+                  <table id="product-mix-table" class="data-grid">
                     <thead id="product-mix-head"></thead>
                     <tbody id="product-mix-body">
                       <tr><td colspan="6" class="empty">Run planning to see product mix.</td></tr>
@@ -279,7 +310,7 @@
                   </div>
                 </div>
                 <div class="table-wrap">
-                  <table id="sku-sales-table">
+                  <table id="sku-sales-table" class="data-grid">
                     <thead id="sku-sales-head"></thead>
                     <tbody id="sku-sales-body">
                       <tr><td colspan="7" class="empty">SKU sales summary will appear after orders are re-uploaded with the SKU mapping.</td></tr>
@@ -305,7 +336,7 @@
                       </div>
                     </div>
                     <div class="table-wrap">
-                      <table id="historical-totals-table">
+                      <table id="historical-totals-table" class="data-grid">
                         <thead id="historical-totals-head"></thead>
                         <tbody id="historical-totals-body">
                           <tr><td colspan="14" class="empty">Run planning to load actual history.</td></tr>
@@ -321,7 +352,7 @@
                       </div>
                     </div>
                     <div class="table-wrap">
-                      <table id="historical-products-table">
+                      <table id="historical-products-table" class="data-grid">
                         <thead id="historical-products-head"></thead>
                         <tbody id="historical-products-body">
                           <tr><td colspan="14" class="empty">Run planning to load product history.</td></tr>
@@ -332,12 +363,12 @@
                   <section class="history-card">
                     <div class="panel-header panel-header-inner">
                       <div>
-                        <p class="eyebrow">YoY</p>
+                        <p class="eyebrow">Year over year</p>
                         <h3>Selected year vs previous year</h3>
                       </div>
                     </div>
                     <div class="table-wrap">
-                      <table id="historical-yoy-table">
+                      <table id="historical-yoy-table" class="data-grid">
                         <thead id="historical-yoy-head"></thead>
                         <tbody id="historical-yoy-body">
                           <tr><td colspan="4" class="empty">Run planning to load YoY change.</td></tr>
@@ -365,7 +396,7 @@
                       </div>
                     </div>
                     <div class="table-wrap">
-                      <table id="launch-reference-table">
+                      <table id="launch-reference-table" class="data-grid">
                         <thead id="launch-reference-head"></thead>
                         <tbody id="launch-reference-body">
                           <tr><td colspan="6" class="empty">Run planning to load launch references.</td></tr>
@@ -381,7 +412,7 @@
                       </div>
                     </div>
                     <div class="table-wrap">
-                      <table id="launch-scenarios-table">
+                      <table id="launch-scenarios-table" class="data-grid">
                         <thead id="launch-scenarios-head"></thead>
                         <tbody id="launch-scenarios-body">
                           <tr><td colspan="10" class="empty">Run planning to load launch scenarios.</td></tr>
@@ -436,7 +467,7 @@
             </form>
 
             <div class="table-wrap">
-              <table id="campaign-table">
+              <table id="campaign-table" class="data-grid">
                 <thead>
                   <tr>
                     <th class="text-left">Event name</th>
@@ -507,7 +538,7 @@
             </form>
 
             <div class="table-wrap">
-              <table id="launch-plan-table">
+              <table id="launch-plan-table" class="data-grid">
                 <thead>
                   <tr>
                     <th class="text-left">New product</th>
@@ -616,7 +647,7 @@
                   </div>
                 </div>
                 <div class="table-wrap">
-                  <table id="kpi-card-detail-table">
+                  <table id="kpi-card-detail-table" class="data-grid">
                     <thead id="kpi-card-detail-head"></thead>
                     <tbody id="kpi-card-detail-body"></tbody>
                   </table>
@@ -648,6 +679,30 @@
         </section>
 
         <section class="page" id="page-settings">
+          <section class="panel panel-results-primary glass-sheen">
+            <div class="panel-header">
+              <p class="eyebrow">Preview Mode</p>
+              <h2>Planner data source</h2>
+              <p class="panel-subcopy">Choose whether this local preview reads and writes local planner files or Firestore. This only changes your preview session.</p>
+            </div>
+            <form id="data-source-form" class="kpi-filter-form planner-settings-form">
+              <div class="kpi-filter-grid">
+                <label>Preview data source
+                  <select id="planner-data-source-select">
+                    <option value="local">Local files</option>
+                    <option value="live">Firestore</option>
+                  </select>
+                </label>
+                <div>
+                  <div class="panel-subcopy" id="planner-data-source-copy">Loading current preview source...</div>
+                </div>
+              </div>
+              <div class="actions planner-settings-actions">
+                <button type="button" class="primary" id="btn-apply-data-source">Apply preview source</button>
+              </div>
+            </form>
+          </section>
+
           <section class="panel panel-results-primary glass-sheen">
             <div class="panel-header">
               <p class="eyebrow">Access</p>
@@ -692,6 +747,17 @@
                 <label title="Used for Jul through Dec unless a product override is set.">Safety stock weeks (Jul-Dec)
                   <input type="number" id="setting-safety-h2" name="safetyStockWeeksH2" value="5" min="0" max="26" step="0.5">
                 </label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="setting-viral-smoothing" name="viralSmoothingEnabled" checked>
+                  <span>Viral outlier smoothing (default)</span>
+                  <span class="tooltip-trigger" title="When enabled, the planner removes the top selling days from the baseline window before calculating velocity. This helps prevent viral spikes from inflating reorder recommendations.">?</span>
+                </label>
+                <label title="How many of the highest-selling days to remove when smoothing is active.">Exclude top selling days
+                  <input type="number" id="setting-viral-top-days" name="viralSmoothingExcludeTopDays" value="2" min="0" max="10" step="1">
+                </label>
+                <label title="Only apply smoothing when there are more than this many selling days in the baseline window.">Only when selling days &gt;
+                  <input type="number" id="setting-viral-min-days" name="viralSmoothingMinSellingDays" value="14" min="0" max="90" step="1">
+                </label>
               </div>
             </form>
           </section>
@@ -703,7 +769,7 @@
             </div>
             <div class="table-wrap">
               <form id="product-settings-form">
-                <table id="product-settings-table">
+                <table id="product-settings-table" class="data-grid">
                   <thead>
                     <tr>
                       <th class="text-left">Product Name</th>
@@ -744,7 +810,7 @@
 
             <div class="table-wrap">
               <form id="sku-mapping-form">
-                <table id="sku-mapping-table">
+                <table id="sku-mapping-table" class="data-grid">
                   <thead>
                     <tr>
                       <th>Source</th>
@@ -793,6 +859,6 @@
     </dialog>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-    <script src="/planner-app.js?v=20260423l"></script>
+    <script src="/planner-app.js?v=20260425n"></script>
   </body>
 </html>

@@ -1,11 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requestPlannerDataSourceMode } from "@/lib/data-source-mode";
 import { getHostedWorkspace, runHostedPlanning } from "@/lib/hosted-planner";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
-    const workspace = await getHostedWorkspace({ forceRefresh: true });
+    const preferredDataSource = requestPlannerDataSourceMode(request);
+    const workspace = await getHostedWorkspace({ forceRefresh: true, preferredDataSource });
     const plan = await runHostedPlanning(
       {
         baselineStart: workspace.defaults.baselineStart,
@@ -18,7 +20,7 @@ export async function POST() {
         planningYear: workspace.defaults.forecastYear,
         monthlyForecastSettings: workspace.defaults.forecastSettings,
       },
-      { forceRefresh: false },
+      { forceRefresh: false, preferredDataSource },
     );
     return NextResponse.json({ ok: true, workspace, plan });
   } catch (error) {

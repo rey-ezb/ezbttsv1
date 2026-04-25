@@ -74,10 +74,16 @@ const closeForecastSettingsButton = document.getElementById("close-forecast-sett
 const forecastMonthPicker = document.getElementById("forecast-month-picker");
 const forecastYearInput = document.getElementById("forecast-year-input");
 const forecastMonthUplift = document.getElementById("forecast-month-uplift");
+const forecastLiftGuidance = document.getElementById("forecast-lift-guidance");
 const forecastProductMixInputs = document.getElementById("forecast-product-mix-inputs");
 const forecastMixTotal = document.getElementById("forecast-mix-total");
 const forecastStatusPill = document.getElementById("forecast-status-pill");
 const forecastBaselineCopy = document.getElementById("forecast-baseline-copy");
+const forecastCopyMixRow = document.getElementById("forecast-copy-mix-row");
+const forecastCopyMixMonth = document.getElementById("forecast-copy-mix-month");
+const forecastCopyMixApplyButton = document.getElementById("forecast-copy-mix-apply");
+const forecastCopyMixHint = document.getElementById("forecast-copy-mix-hint");
+const forecastUpliftSuggestion = document.getElementById("forecast-uplift-suggestion");
 const saveForecastSettingsButton = document.getElementById("save-forecast-settings");
 const resetForecastSettingsButton = document.getElementById("reset-forecast-settings");
 const planningYearInput = document.getElementById("planning-year");
@@ -106,6 +112,9 @@ const saveSettingsButton = document.getElementById("btn-save-settings");
 const skuMappingBody = document.getElementById("sku-mapping-body");
 const addSkuMappingButton = document.getElementById("btn-add-sku-mapping");
 const saveSkuMappingButton = document.getElementById("btn-save-sku-mapping");
+const plannerDataSourceSelect = document.getElementById("planner-data-source-select");
+const plannerDataSourceCopy = document.getElementById("planner-data-source-copy");
+const applyDataSourceButton = document.getElementById("btn-apply-data-source");
 
 let inventoryUploaded = false;
 let forecastSettings = {};
@@ -127,6 +136,7 @@ let activeHistoryTab = "monthly";
 let kpisRequested = false;
 let activeHelpTrigger = null;
 let activeLaunchEditId = "";
+let plannerDataSourceMode = "local";
 const plannerVariant = new URLSearchParams(window.location.search).get("plannerVariant") || "current";
 const floatingHelpTooltip = document.createElement("div");
 floatingHelpTooltip.className = "app-tooltip";
@@ -144,7 +154,14 @@ const CORE_PRODUCTS = [
   "Variety Pack",
 ];
 const FORECAST_STORAGE_KEY = "demand-planning-rail-collapsed";
+
+function updateRailToggleLabel(collapsed) {
+  if (!railToggle) return;
+  railToggle.textContent = collapsed ? ">" : "Collapse";
+  railToggle.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+}
 const MARKETING_STORAGE_KEY = "demand-planning-marketing-config-v1";
+const PLANNER_DATA_SOURCE_STORAGE_KEY = "demand-planning-preview-data-source";
 const PAGE_CONTENT = {
   planning: {
     chip: "Demand Planning",
@@ -201,7 +218,7 @@ function humanDate(value) {
   const [, year, month, day] = match;
   const date = new Date(Number(year), Number(month) - 1, Number(day));
   if (Number.isNaN(date.getTime())) return iso;
-  return new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(date);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
 
 function percent(value) {
@@ -982,7 +999,7 @@ const HEADER_HELP = {
   "Status": "Planner status summary. Spoilage Risk is currently estimated as: projected_supply_days = (on_hand + in_transit + recommended_order_units) / forecast_daily_demand. The row is marked Spoilage Risk when projected_supply_days is greater than shelf_life_months * 30. This is not batch-aware, so it does not distinguish older warehouse stock from newer fresh inventory.",
   "Daily velocity": "Average units sold per day from the selected baseline dates.",
   "Order units": "Actual units sold in the selected baseline date range.",
-  "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on and there are more than 14 selling days, the planner removes the top 2 highest sales days before calculating demand velocity.",
+  "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on, the planner can remove the highest-selling days from the baseline window before calculating demand velocity (tune the thresholds in Settings).",
   "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
   "Gross sales": "Gross product sales in the selected baseline dates (SUM of SKU Subtotal Before Discount). This includes cancelled orders (GMV-style); demand units remain net of returns.",
   "Net gross (est.)": "Planner-style net product sales estimate (TikTok finance shape). Cancelled orders are set to $0. We subtract seller-funded discount from SKU Subtotal Before Discount, then prorate for returned units. Platform discount is not subtracted.",
@@ -1188,6 +1205,10 @@ function defaultProductMix() {
   return Object.fromEntries(CORE_PRODUCTS.map((product) => [product, share]));
 }
 
+function defaultProductLiftOverrides() {
+  return Object.fromEntries(CORE_PRODUCTS.map((product) => [product, 0]));
+}
+
 function defaultPlannerSettings() {
   return {
     global: {
@@ -1195,6 +1216,9 @@ function defaultPlannerSettings() {
       defaultLeadTimeDays: 8,
       safetyStockWeeksH1: 3,
       safetyStockWeeksH2: 5,
+      viralSmoothingEnabled: true,
+      viralSmoothingExcludeTopDays: 2,
+      viralSmoothingMinSellingDays: 14,
     },
     products: {
       "Birria Bomb 2-Pack": { cogs: 3.1, moq: 0, casePack: 24, shelfLife: 24, safetyStockWeeksOverride: 0 },
@@ -1219,6 +1243,9 @@ function normalizePlannerSettings(settings) {
       defaultLeadTimeDays: Math.max(1, Number(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
       safetyStockWeeksH1: Math.max(0, Number(global.safetyStockWeeksH1) || defaults.global.safetyStockWeeksH1),
       safetyStockWeeksH2: Math.max(0, Number(global.safetyStockWeeksH2) || defaults.global.safetyStockWeeksH2),
+      viralSmoothingEnabled: global.viralSmoothingEnabled === undefined ? defaults.global.viralSmoothingEnabled : Boolean(global.viralSmoothingEnabled),
+      viralSmoothingExcludeTopDays: Math.max(0, Math.min(10, Math.floor(Number(global.viralSmoothingExcludeTopDays) || defaults.global.viralSmoothingExcludeTopDays))),
+      viralSmoothingMinSellingDays: Math.max(0, Math.min(120, Math.floor(Number(global.viralSmoothingMinSellingDays) || defaults.global.viralSmoothingMinSellingDays))),
     },
     products: Object.fromEntries(CORE_PRODUCTS.map((product) => {
       const sourceProduct = products[product] && typeof products[product] === "object" ? products[product] : {};
@@ -1244,6 +1271,9 @@ function renderPlannerSettings(settings) {
   globalSettingsForm.elements["defaultLeadTimeDays"].value = String(normalized.global.defaultLeadTimeDays);
   globalSettingsForm.elements["safetyStockWeeksH1"].value = String(normalized.global.safetyStockWeeksH1);
   globalSettingsForm.elements["safetyStockWeeksH2"].value = String(normalized.global.safetyStockWeeksH2);
+  if (globalSettingsForm.elements["viralSmoothingEnabled"]) globalSettingsForm.elements["viralSmoothingEnabled"].checked = Boolean(normalized.global.viralSmoothingEnabled);
+  if (globalSettingsForm.elements["viralSmoothingExcludeTopDays"]) globalSettingsForm.elements["viralSmoothingExcludeTopDays"].value = String(normalized.global.viralSmoothingExcludeTopDays);
+  if (globalSettingsForm.elements["viralSmoothingMinSellingDays"]) globalSettingsForm.elements["viralSmoothingMinSellingDays"].value = String(normalized.global.viralSmoothingMinSellingDays);
   productSettingsBody.innerHTML = CORE_PRODUCTS.map((product) => {
     const productSettings = normalized.products[product];
     return `
@@ -1267,6 +1297,9 @@ function readPlannerSettingsForm() {
       defaultLeadTimeDays: Math.max(1, Number(globalSettingsForm?.elements?.defaultLeadTimeDays?.value) || defaults.global.defaultLeadTimeDays),
       safetyStockWeeksH1: Math.max(0, Number(globalSettingsForm?.elements?.safetyStockWeeksH1?.value) || defaults.global.safetyStockWeeksH1),
       safetyStockWeeksH2: Math.max(0, Number(globalSettingsForm?.elements?.safetyStockWeeksH2?.value) || defaults.global.safetyStockWeeksH2),
+      viralSmoothingEnabled: globalSettingsForm?.elements?.viralSmoothingEnabled?.checked ?? defaults.global.viralSmoothingEnabled,
+      viralSmoothingExcludeTopDays: Math.max(0, Math.min(10, Math.floor(Number(globalSettingsForm?.elements?.viralSmoothingExcludeTopDays?.value) || defaults.global.viralSmoothingExcludeTopDays))),
+      viralSmoothingMinSellingDays: Math.max(0, Math.min(120, Math.floor(Number(globalSettingsForm?.elements?.viralSmoothingMinSellingDays?.value) || defaults.global.viralSmoothingMinSellingDays))),
     },
     products: {},
   };
@@ -1301,6 +1334,7 @@ function normalizeForecastSettings(defaults = {}) {
     settings[monthKey] = {
       upliftPct: Number(upliftPct || 0),
       productMix: null,
+      productLiftOverrides: defaultProductLiftOverrides(),
     };
   });
   Object.entries(defaults.forecastSettings || {}).forEach(([monthKey, setting]) => {
@@ -1308,13 +1342,155 @@ function normalizeForecastSettings(defaults = {}) {
     settings[monthKey] = {
       upliftPct: Number(setting?.upliftPct ?? settings[monthKey]?.upliftPct ?? 0),
       productMix: rawMix,
+      productLiftOverrides: normalizeProductLiftOverrides(setting?.productLiftOverrides || settings[monthKey]?.productLiftOverrides || {}),
     };
   });
   return settings;
 }
 
+function normalizeProductLiftOverrides(rawOverrides = {}) {
+  return Object.fromEntries(
+    CORE_PRODUCTS.map((product) => {
+      const numeric = Number(rawOverrides?.[product]);
+      return [product, Number.isFinite(numeric) ? numeric : 0];
+    }),
+  );
+}
+
 function getMonthlyActualMix(monthKey) {
   return monthlyActualMix?.[monthKey] || null;
+}
+
+function listActualMixMonthKeys() {
+  return Object.keys(monthlyActualMix || {}).sort().reverse();
+}
+
+function suggestCopyMixMonthKey(targetMonthKey) {
+  if (!targetMonthKey || targetMonthKey.length < 7) return null;
+  const year = Number(targetMonthKey.slice(0, 4));
+  const month = targetMonthKey.slice(5, 7);
+  if (!Number.isFinite(year)) return null;
+  const sameMonthLastYear = `${year - 1}-${month}`;
+  if (getMonthlyActualMix(sameMonthLastYear)) return sameMonthLastYear;
+  return null;
+}
+
+function suggestSeasonalityUplift(targetMonthKey) {
+  if (!targetMonthKey || targetMonthKey.length < 7) return null;
+  const baselineEndInput = document.getElementById("baseline-end");
+  const baselineEndIso = baselineEndInput ? toIsoDate(baselineEndInput.value) : "";
+  if (!baselineEndIso) return null;
+
+  const targetYear = Number(targetMonthKey.slice(0, 4));
+  const targetMonth = targetMonthKey.slice(5, 7);
+  const baselineMonth = baselineEndIso.slice(5, 7);
+  if (!Number.isFinite(targetYear)) return null;
+
+  const referenceYear = targetYear - 1;
+  if (!Number.isFinite(referenceYear) || referenceYear < 2020) return null;
+  const baselineRefKey = `${referenceYear}-${baselineMonth}`;
+  const targetRefKey = `${referenceYear}-${targetMonth}`;
+
+  const baselineRefUnits = Number(getMonthlyActuals(baselineRefKey)?.totalUnits ?? 0);
+  const targetRefUnits = Number(getMonthlyActuals(targetRefKey)?.totalUnits ?? 0);
+  if (!(Number.isFinite(baselineRefUnits) && baselineRefUnits > 0 && Number.isFinite(targetRefUnits) && targetRefUnits > 0)) {
+    return null;
+  }
+
+  return {
+    referenceYear,
+    baselineRefKey,
+    targetRefKey,
+    baselineRefUnits,
+    targetRefUnits,
+    upliftPct: roundCurrency(((targetRefUnits / baselineRefUnits) - 1) * 100),
+  };
+}
+
+function renderForecastUpliftSuggestion(targetMonthKey) {
+  if (!(forecastUpliftSuggestion instanceof HTMLElement)) return;
+  const suggestion = suggestSeasonalityUplift(targetMonthKey);
+  if (!suggestion) {
+    forecastUpliftSuggestion.textContent = "";
+    forecastUpliftSuggestion.hidden = true;
+    return;
+  }
+  const sign = suggestion.upliftPct >= 0 ? "+" : "";
+  forecastUpliftSuggestion.hidden = false;
+  forecastUpliftSuggestion.textContent =
+    `Seasonality hint (from ${suggestion.referenceYear}): `
+    + `${monthLabelFromKey(suggestion.targetRefKey)} ${integer(suggestion.targetRefUnits)} units vs `
+    + `${monthLabelFromKey(suggestion.baselineRefKey)} ${integer(suggestion.baselineRefUnits)} -> `
+    + `suggested ${sign}${number(suggestion.upliftPct)}%.`;
+}
+
+function roundMixToTenthAndFixTotal(mix) {
+  const rounded = {};
+  CORE_PRODUCTS.forEach((product) => {
+    const numeric = Number(mix?.[product] ?? 0);
+    rounded[product] = Number.isFinite(numeric) ? Math.max(0, Math.round(numeric * 10) / 10) : 0;
+  });
+  const total = CORE_PRODUCTS.reduce((sum, product) => sum + Number(rounded[product] || 0), 0);
+  if (total <= 0) return defaultProductMix();
+  const diff = Math.round((100 - total) * 10) / 10;
+  if (Math.abs(diff) < 0.05) return rounded;
+  const anchor = CORE_PRODUCTS[0];
+  rounded[anchor] = Math.max(0, Math.round((Number(rounded[anchor] || 0) + diff) * 10) / 10);
+  return rounded;
+}
+
+function computeMixFromReference(referenceMix) {
+  const next = {};
+  CORE_PRODUCTS.forEach((product) => {
+    const raw = Number(referenceMix?.[product]);
+    if (Number.isFinite(raw)) {
+      next[product] = Math.max(0, raw);
+    } else {
+      next[product] = 0;
+    }
+  });
+  const sum = CORE_PRODUCTS.reduce((total, product) => total + Number(next[product] || 0), 0);
+  if (sum <= 0) return null;
+  const scaled = Object.fromEntries(CORE_PRODUCTS.map((product) => [product, (Number(next[product] || 0) / sum) * 100]));
+  return roundMixToTenthAndFixTotal(scaled);
+}
+
+function renderForecastCopyMixPicker(monthKey, { editable = true } = {}) {
+  if (!(forecastCopyMixMonth instanceof HTMLSelectElement)) return;
+  const keys = listActualMixMonthKeys();
+  const suggested = suggestCopyMixMonthKey(monthKey);
+  const previous = forecastCopyMixMonth.value;
+  const valueToKeep = previous && keys.includes(previous) ? previous : (suggested || "");
+
+  forecastCopyMixMonth.innerHTML = [
+    `<option value="">Choose a month…</option>`,
+    ...keys.map((key) => `<option value="${escapeHtml(key)}">${escapeHtml(monthLabelFromKey(key))} actuals</option>`),
+  ].join("");
+  forecastCopyMixMonth.value = valueToKeep;
+
+  if (forecastCopyMixRow instanceof HTMLElement) forecastCopyMixRow.hidden = !editable;
+  if (forecastCopyMixHint instanceof HTMLElement) forecastCopyMixHint.hidden = !editable;
+  if (forecastCopyMixApplyButton instanceof HTMLButtonElement) forecastCopyMixApplyButton.disabled = !editable;
+  forecastCopyMixMonth.disabled = !editable;
+}
+
+function applyCopiedMixFromMonth(referenceMonthKey) {
+  if (!referenceMonthKey) return false;
+  const referenceMix = getMonthlyActualMix(referenceMonthKey);
+  if (!referenceMix) return false;
+  const blended = computeMixFromReference(referenceMix);
+  if (!blended) return false;
+
+  forecastProductMixInputs.querySelectorAll("input[data-product-mix]").forEach((input) => {
+    const product = String(input.dataset.productMix || "");
+    if (!product) return;
+    const value = Number(blended[product] ?? 0);
+    input.value = String(Number.isFinite(value) ? value.toFixed(1).replace(/\.0$/, "") : "0");
+  });
+
+  updateForecastMixTotal();
+  syncForecastInputsFromProductLifts({ baselineUnits: baselineUnitsLookup(), readOnly: false });
+  return true;
 }
 
 function getMonthlyActuals(monthKey) {
@@ -1681,7 +1857,10 @@ function getSelectedPlanningMonthKey() {
 }
 
 function monthHasActuals(monthKey) {
-  return Boolean(getMonthlyActuals(monthKey));
+  const actuals = getMonthlyActuals(monthKey);
+  if (!actuals) return false;
+  const totalUnits = Number(actuals.totalUnits ?? 0);
+  return Number.isFinite(totalUnits) && totalUnits > 0;
 }
 
 function isEditableForecastMonth(monthKey) {
@@ -1690,20 +1869,27 @@ function isEditableForecastMonth(monthKey) {
 
 function getForecastSetting(monthKey, { persist = false } = {}) {
   if (!monthKey) {
-    return { upliftPct: Number(document.getElementById("uplift-pct").value || 35), productMix: { ...defaultProductMix() } };
+    return {
+      upliftPct: Number(document.getElementById("uplift-pct").value || 35),
+      productMix: { ...defaultProductMix() },
+      productLiftOverrides: defaultProductLiftOverrides(),
+    };
   }
   const existing = forecastSettings[monthKey];
   if (!existing) {
     const monthActualMix = getMonthlyActualMix(monthKey);
+    const suggested = suggestSeasonalityUplift(monthKey);
     const draftSetting = {
-      upliftPct: Number(document.getElementById("uplift-pct").value || 35),
+      upliftPct: suggested ? Number(suggested.upliftPct) : Number(document.getElementById("uplift-pct").value || 35),
       productMix: monthActualMix ? normalizeProductMix(monthActualMix, defaultProductMix()) : null,
+      productLiftOverrides: defaultProductLiftOverrides(),
     };
     return persist ? (forecastSettings[monthKey] = draftSetting) : draftSetting;
   }
   const normalized = {
     upliftPct: Number(existing?.upliftPct ?? 35),
     productMix: existing?.productMix ? normalizeProductMix(existing?.productMix, defaultProductMix()) : null,
+    productLiftOverrides: normalizeProductLiftOverrides(existing?.productLiftOverrides || {}),
   };
   if (persist) {
     forecastSettings[monthKey] = normalized;
@@ -1725,18 +1911,111 @@ function baselineMixLookup() {
   );
 }
 
+function baselineUnitsLookup() {
+  const rows = latestPlanPayload?.productMix?.rows || [];
+  return Object.fromEntries(
+    rows.map((row) => [String(row.product_name || ""), Number(row.baseline_units || 0)]),
+  );
+}
+
+function hasProductLiftOverrides(setting) {
+  return CORE_PRODUCTS.some((product) => Math.abs(Number(setting?.productLiftOverrides?.[product] || 0)) > 0.0001);
+}
+
+function calculateForecastFromProductLifts(overrides = {}, baselineUnits = {}) {
+  const normalizedOverrides = normalizeProductLiftOverrides(overrides);
+  const rows = CORE_PRODUCTS.map((product) => {
+    const baseUnits = Number(baselineUnits?.[product] || 0);
+    const liftPct = Number(normalizedOverrides[product] || 0);
+    const plannedUnits = Math.max(0, baseUnits * (1 + (liftPct / 100)));
+    return { product, baseUnits, liftPct, plannedUnits };
+  });
+  const totalBaselineUnits = rows.reduce((sum, row) => sum + row.baseUnits, 0);
+  const totalPlannedUnits = rows.reduce((sum, row) => sum + row.plannedUnits, 0);
+  return {
+    rows: rows.map((row) => ({
+      ...row,
+      plannedSharePct: totalPlannedUnits > 0 ? (row.plannedUnits / totalPlannedUnits) * 100 : 0,
+    })),
+    totalBaselineUnits,
+    totalPlannedUnits,
+    upliftPct: totalBaselineUnits > 0 ? ((totalPlannedUnits / totalBaselineUnits) - 1) * 100 : 0,
+    productMix: totalPlannedUnits > 0
+      ? Object.fromEntries(rows.map((row) => [row.product, (row.plannedUnits / totalPlannedUnits) * 100]))
+      : null,
+  };
+}
+
+function readForecastProductLiftOverrides() {
+  if (!forecastProductMixInputs) return defaultProductLiftOverrides();
+  return normalizeProductLiftOverrides(
+    Object.fromEntries(
+      Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-lift]")).map((input) => [String(input.dataset.productLift || ""), Number(input.value || 0)]),
+    ),
+  );
+}
+
+function updateForecastLiftPreview(computed) {
+  if (!forecastProductMixInputs || !computed?.rows?.length) return;
+  computed.rows.forEach((row) => {
+    const field = forecastProductMixInputs.querySelector(`.forecast-product-field[data-forecast-product="${CSS.escape(row.product)}"]`);
+    const footnote = field?.querySelector(".forecast-product-footnote");
+    if (!(footnote instanceof HTMLElement)) return;
+    footnote.textContent = `Planned units ${number(row.plannedUnits || 0)} | Planned share ${number(row.plannedSharePct || 0)}%`;
+  });
+}
+
+function syncForecastInputsFromProductLifts({ baselineUnits = {}, readOnly = false } = {}) {
+  const overrides = readForecastProductLiftOverrides();
+  const computed = calculateForecastFromProductLifts(overrides, baselineUnits);
+  const hasOverrides = CORE_PRODUCTS.some((product) => Math.abs(Number(overrides[product] || 0)) > 0.0001);
+  if (forecastUpliftSuggestion instanceof HTMLElement) {
+    const hasSuggestionText = Boolean(forecastUpliftSuggestion.textContent && forecastUpliftSuggestion.textContent.trim());
+    forecastUpliftSuggestion.hidden = readOnly || hasOverrides || !hasSuggestionText;
+  }
+  forecastMonthUplift.disabled = readOnly || hasOverrides;
+  forecastProductMixInputs.querySelectorAll("input[data-product-mix]").forEach((input) => {
+    input.disabled = readOnly;
+  });
+  if (hasOverrides) {
+    forecastMonthUplift.value = String(roundCurrency(computed.upliftPct));
+    if (forecastLiftGuidance) {
+      forecastLiftGuidance.textContent = "Lift % is set for this month. Target uplift is auto-calculated from product lifts.";
+    }
+  } else {
+    if (forecastLiftGuidance) {
+      forecastLiftGuidance.textContent = "Either set Target uplift, or set Lift % per product (then Target uplift auto-calculates).";
+    }
+  }
+  updateForecastLiftPreview(computed);
+  return { overrides, computed, hasOverrides };
+}
+
 function renderForecastProductMixInputs(setting, options = {}) {
   const actualMix = options.actualMix || {};
   const mix = normalizeProductMix(setting?.productMix || actualMix || {}, defaultProductMix());
+  const liftOverrides = normalizeProductLiftOverrides(setting?.productLiftOverrides || {});
+  const baselineUnits = options.baselineUnits || {};
+  const computed = calculateForecastFromProductLifts(liftOverrides, baselineUnits);
   const hasSavedMix = Boolean(setting?.productMix && Object.keys(setting.productMix || {}).length);
   const readOnly = Boolean(options.readOnly);
   forecastProductMixInputs.innerHTML = CORE_PRODUCTS.map((product) => `
-    <label class="forecast-product-field ${hasSavedMix ? "is-saved" : ""} ${readOnly ? "is-readonly" : ""}">
+    <label class="forecast-product-field ${hasSavedMix ? "is-saved" : ""} ${readOnly ? "is-readonly" : ""}" data-forecast-product="${escapeHtml(product)}">
       <span class="forecast-product-label">
-        <strong>${escapeHtml(displayProductName(product))}</strong>
-        <small>${actualMix?.[product] !== undefined ? `${options.actualMixLabel || "Reference"} ${number(actualMix[product])}%` : "No reference mix loaded yet"}</small>
+        <strong class="forecast-product-name">${escapeHtml(displayProductName(product))}</strong>
+        <small class="forecast-product-meta">${actualMix?.[product] !== undefined ? `${options.actualMixLabel || "Baseline"} ${number(actualMix[product])}%` : "Baseline n/a"}${baselineUnits?.[product] !== undefined ? ` · Units ${number(baselineUnits[product])}` : ""}</small>
       </span>
-      <input type="number" data-product-mix="${product}" value="${Number(mix[product] || 0).toFixed(1).replace(/\\.0$/, "")}" step="0.1" ${readOnly ? "disabled" : ""}>
+      <span class="forecast-inline-inputs">
+        <span class="forecast-inline-pill">
+          <span class="forecast-inline-pill-label">Mix %</span>
+          <input class="forecast-inline-pill-input" type="number" data-product-mix="${product}" value="${Number(mix[product] || 0).toFixed(1).replace(/\\.0$/, "")}" step="0.1" ${readOnly ? "disabled" : ""}>
+        </span>
+        <span class="forecast-inline-pill">
+          <span class="forecast-inline-pill-label">Lift %</span>
+          <input class="forecast-inline-pill-input" type="number" data-product-lift="${product}" value="${Number(liftOverrides[product] || 0).toFixed(1).replace(/\\.0$/, "")}" step="0.1" ${readOnly ? "disabled" : ""}>
+        </span>
+      </span>
+      <small class="forecast-product-footnote">Planned units ${number(computed.rows.find((row) => row.product === product)?.plannedUnits || 0)} | Planned share ${number(computed.rows.find((row) => row.product === product)?.plannedSharePct || 0)}%</small>
     </label>
   `).join("");
   updateForecastMixTotal();
@@ -1761,7 +2040,9 @@ function renderForecastSummary() {
   document.getElementById("uplift-pct").value = String(setting.upliftPct ?? 35);
   forecastSummaryTitle.textContent = isEditableForecastMonth(monthKey) ? `${monthLabelFromKey(monthKey)} plan` : `${monthLabelFromKey(monthKey)} actuals`;
   forecastSummaryCopy.textContent = isEditableForecastMonth(monthKey)
-    ? `Planned change vs prior month: ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%.`
+    ? hasProductLiftOverrides(setting)
+      ? `Planned change vs prior month: ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%, calculated from product lifts.`
+      : `Planned change vs prior month: ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%.`
     : `Actual change vs previous month: ${actualStats?.changePctVsPreviousMonth === null || actualStats?.changePctVsPreviousMonth === undefined ? "n/a" : `${actualStats.changePctVsPreviousMonth >= 0 ? "+" : ""}${number(actualStats.changePctVsPreviousMonth)}%`}.`;
   if (!setting.productMix) {
     forecastSummaryList.innerHTML = `
@@ -1775,6 +2056,7 @@ function renderForecastSummary() {
     .sort((a, b) => b[1] - a[1]);
   forecastSummaryList.innerHTML = [
     `<span class="forecast-summary-pill">${isEditableForecastMonth(monthKey) ? `Plan ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%` : "Actual month mix"}</span>`,
+    ...(isEditableForecastMonth(monthKey) && hasProductLiftOverrides(setting) ? ['<span class="forecast-summary-pill forecast-summary-pill-muted">Calculated from product lifts</span>'] : []),
     ...sortedMix.map(([product, value]) => `<span class="forecast-summary-pill">${escapeHtml(displayProductName(product).replace(" Bomb 2P", "").replace(" Bomb", ""))} ${number(value)}%</span>`),
   ].join("");
 }
@@ -1787,11 +2069,15 @@ function loadForecastDialogMonth(monthKey) {
   const monthActualMix = getMonthlyActualMix(monthKey);
   const monthActualStats = getMonthlyActuals(monthKey);
   const editable = isEditableForecastMonth(monthKey);
+  const baselineUnits = baselineUnitsLookup();
+  renderForecastCopyMixPicker(monthKey, { editable });
+  renderForecastUpliftSuggestion(editable ? monthKey : "");
   const setting = editable
     ? getForecastSetting(monthKey)
     : {
         upliftPct: Number(monthActualStats?.changePctVsPreviousMonth ?? 0),
         productMix: monthActualMix || baselineMix,
+        productLiftOverrides: defaultProductLiftOverrides(),
       };
   forecastMonthUplift.value = String(setting.upliftPct ?? 35);
   forecastMonthUplift.disabled = !editable;
@@ -1816,17 +2102,24 @@ function loadForecastDialogMonth(monthKey) {
     const changeText = monthActualStats?.changePctVsPreviousMonth === null || monthActualStats?.changePctVsPreviousMonth === undefined
       ? "No previous month to compare."
       : `Actual change vs previous month: ${monthActualStats.changePctVsPreviousMonth >= 0 ? "+" : ""}${number(monthActualStats.changePctVsPreviousMonth)}%.`;
-    forecastBaselineCopy.textContent = `The product split below comes from ${monthLabelFromKey(monthKey)} actuals. ${changeText}`;
+    const actualLabel = monthLabelFromKey(monthKey);
+    forecastBaselineCopy.innerHTML = `The product split below comes from <span class="forecast-baseline-dates">${escapeHtml(actualLabel)}</span> actuals. ${escapeHtml(changeText)}`;
   } else {
     const baselineStart = document.getElementById("baseline-start").value || "selected start";
     const baselineEnd = document.getElementById("baseline-end").value || "selected end";
-    forecastBaselineCopy.textContent = `Reference mix below comes from the selected baseline window: ${baselineStart} to ${baselineEnd}.`;
+    forecastBaselineCopy.innerHTML = `Reference mix below comes from the selected baseline window: <span class="forecast-baseline-dates">${escapeHtml(baselineStart)} to ${escapeHtml(baselineEnd)}</span>.`;
   }
   renderForecastProductMixInputs(setting, {
     actualMix: editable ? baselineMix : (monthActualMix || baselineMix),
-    actualMixLabel: editable ? "Baseline mix" : `Actual ${monthLabelFromKey(monthKey)} mix`,
+    actualMixLabel: editable ? "Baseline" : `Actual ${monthLabelFromKey(monthKey)}`,
+    baselineUnits,
     readOnly: !editable,
   });
+  if (editable) {
+    syncForecastInputsFromProductLifts({ baselineUnits, readOnly: false });
+  } else if (forecastLiftGuidance) {
+    forecastLiftGuidance.textContent = "This month already has actuals, so the planner is showing the real mix and lift instead of editable inputs.";
+  }
 }
 
 function openForecastDialog() {
@@ -1905,7 +2198,7 @@ function applyDefaults(defaults) {
   document.getElementById("uplift-pct").value = defaults.upliftPct ?? 0;
   document.getElementById("lead-time-days").value = defaults.leadTimeDays ?? 8;
   const excludeSpikesInput = document.getElementById("exclude-spikes");
-  if (excludeSpikesInput) excludeSpikesInput.checked = defaults.excludeSpikes ?? true;
+  if (excludeSpikesInput) excludeSpikesInput.checked = sharedPlannerSettings?.global?.viralSmoothingEnabled ?? defaults.excludeSpikes ?? true;
   document.getElementById("velocity-mode").value = defaults.velocityMode || "sales_only";
   safetyRuleNote.textContent = `Planning period = the future dates you want to cover. Safety stock: ${defaults.safetyRule || ""}`;
   renderPlannerSettings(sharedPlannerSettings);
@@ -2058,16 +2351,28 @@ function buildMonthModeGroups(months) {
   }, []);
 }
 
-function renderMonthlyPlanHeaderCell(month) {
+function renderMonthlyPlanHeaderCell(month, options = {}) {
   const help = `${month.label} units for the selected plan year.`;
+  const currentMonthKey = options.currentMonthKey || null;
+  const isCurrent = Boolean(currentMonthKey && month.key === currentMonthKey);
+  const baseClass = `month-header-cell month-header-cell-${month.mode || "actual"}${isCurrent ? " is-current" : ""}`;
   if (month.mode !== "forecast") {
-    return renderHeaderCell(month.label, { help });
+    return `
+      <th class="${baseClass}" data-month-key="${escapeHtml(month.key)}" data-month-mode="${escapeHtml(month.mode || "actual")}">
+        <span class="th-help">
+          <span class="month-header-label-row">
+            <span>${escapeHtml(month.label)}</span>
+            <button type="button" class="th-help-trigger" data-help="${escapeHtml(help)}" aria-label="More info about ${escapeHtml(month.label)}">?</button>
+          </span>
+        </span>
+      </th>
+    `;
   }
   const setting = getForecastSetting(month.key, { persist: false });
   const upliftPct = Number(setting?.upliftPct || 0);
   const baselineIndex = 100 + upliftPct;
   return `
-    <th class="month-header-cell month-header-cell-forecast">
+    <th class="${baseClass}" data-month-key="${escapeHtml(month.key)}" data-month-mode="forecast">
       <span class="th-help">
         <span class="month-header-stack">
           <span class="month-header-label-row">
@@ -2088,6 +2393,7 @@ function renderMonthlyPlan(payload) {
   const year = payload.year || forecastYear;
   const actualMonths = months.filter((month) => month.mode === "actual").map((month) => month.label);
   const actualMtdMonth = months.find((month) => month.mode === "actual_mtd");
+  const currentMonthKey = (actualMtdMonth?.key || months.find((month) => month.mode === "forecast")?.key || months[0]?.key || null);
   if (monthlyPlanCopy) {
     monthlyPlanCopy.textContent = actualMtdMonth
       ? `Shows closed actual months for ${actualMonths.join(", ")}${actualMonths.length ? ", " : ""}plus ${actualMtdMonth.label} month-to-date through ${payload.latestDemandDate}. Each cell shows units first, then that product's share of the month total. Forecast month units already include your saved uplift.`
@@ -2108,7 +2414,7 @@ function renderMonthlyPlan(payload) {
     }
     const month = months.find((entry) => entry.key === key);
     if (month) {
-      return renderMonthlyPlanHeaderCell(month);
+      return renderMonthlyPlanHeaderCell(month, { currentMonthKey });
     }
     return renderHeaderCell(label);
   }).join("");
@@ -2125,6 +2431,7 @@ function renderMonthlyPlan(payload) {
     return;
   }
   const monthKeys = months.map((month) => month.key);
+  const monthMeta = Object.fromEntries(months.map((month) => [month.key, month]));
   const totals = rows.reduce((acc, row) => {
     columns.forEach(([, key]) => {
       if (key !== "product_name" && key !== "year_mix_pct") acc[key] = (acc[key] || 0) + Number(row[key] || 0);
@@ -2138,30 +2445,37 @@ function renderMonthlyPlan(payload) {
     if (monthKeys.includes(key)) {
       const value = Number(row[key] || 0);
       const share = monthTotals[key] > 0 ? value / monthTotals[key] : 0;
+      const meta = monthMeta[key] || {};
+      const isCurrent = Boolean(currentMonthKey && key === currentMonthKey);
+      const dominantClass = share >= 0.5 ? " is-dominant" : "";
       return `
-        <td>
-          <div class="month-value-cell">
-            <span class="month-value-number">${number(value)}</span>
+        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(value)} • Share ${percent(share)}">
+          <div class="month-value-cell${dominantClass}" style="--share:${Math.max(0, Math.min(1, share)).toFixed(4)}">
+            <span class="month-value-number">${integer(value)}</span>
             <span class="month-value-share">${percent(share)}</span>
           </div>
         </td>
       `;
     }
+    if (key === "year_total_units") return `<td>${integer(row[key])}</td>`;
     return `<td>${number(row[key])}</td>`;
   }).join("")}</tr>`).join("");
   const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => {
     if (key === "product_name") return "<td>Totals</td>";
     if (key === "year_mix_pct") return "<td>100%</td>";
     if (monthKeys.includes(key)) {
+      const meta = monthMeta[key] || {};
+      const isCurrent = Boolean(currentMonthKey && key === currentMonthKey);
       return `
-        <td>
-          <div class="month-value-cell">
-            <span class="month-value-number">${number(totals[key])}</span>
+        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(totals[key])} • Share 100%">
+          <div class="month-value-cell is-total" style="--share:1">
+            <span class="month-value-number">${integer(totals[key])}</span>
             <span class="month-value-share">100%</span>
           </div>
         </td>
       `;
     }
+    if (key === "year_total_units") return `<td>${integer(totals[key])}</td>`;
     return `<td>${number(totals[key])}</td>`;
   }).join("")}</tr>`;
   monthlyPlanBody.innerHTML = `${bodyRows}${totalsRow}`;
@@ -2237,11 +2551,11 @@ function renderSkuSalesSummary(payload) {
     return acc;
   }, { units_sold: 0, gross_sales: 0, net_gross_sales: 0 });
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => {
-    if (key === "sku_type") return `<td>${row[key] === "virtual_bundle" ? "Virtual bundle" : "Core"}</td>`;
+    if (key === "sku_type") return `<td class="is-text">${row[key] === "virtual_bundle" ? "Virtual bundle" : "Core"}</td>`;
     if (key === "gross_sales" || key === "net_gross_sales" || key === "avg_gross_per_unit" || key === "avg_net_gross_per_unit") return `<td>${money(row[key])}</td>`;
     if (key === "units_sold") return `<td>${number(row[key])}</td>`;
-    if (key === "product_name" || key === "core_products") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
-    return `<td>${escapeHtml(row[key] || "")}</td>`;
+    if (key === "product_name" || key === "core_products") return `<td class="is-text">${escapeHtml(displayProductName(row[key] || ""))}</td>`;
+    return `<td class="is-text">${escapeHtml(row[key] || "")}</td>`;
   }).join("")}</tr>`).join("");
   const totalsRow = `<tr class="totals-row"><td>Totals</td><td></td><td></td><td></td><td>${number(totals.units_sold)}</td><td>${money(totals.gross_sales)}</td><td>${money(totals.net_gross_sales)}</td><td>${money(totals.units_sold > 0 ? totals.gross_sales / totals.units_sold : 0)}</td><td>${money(totals.units_sold > 0 ? totals.net_gross_sales / totals.units_sold : 0)}</td></tr>`;
   skuSalesBody.innerHTML = `${bodyRows}${totalsRow}`;
@@ -3339,12 +3653,61 @@ async function readJsonResponse(response, url) {
 }
 
 async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  const payload = await readJsonResponse(response, url);
+  const requestUrl = new URL(url, window.location.origin);
+  if (requestUrl.origin === window.location.origin && requestUrl.pathname.startsWith("/api/")) {
+    requestUrl.searchParams.set("dataSource", plannerDataSourceMode || "local");
+  }
+  const response = await fetch(requestUrl.toString(), options);
+  const payload = await readJsonResponse(response, requestUrl.toString());
   if (!response.ok || payload.error) {
     throw new Error(payload.error || `Request failed (${response.status})`);
   }
   return payload;
+}
+
+function getStoredPlannerDataSource() {
+  try {
+    const stored = window.localStorage.getItem(PLANNER_DATA_SOURCE_STORAGE_KEY);
+    return stored === "live" ? "live" : "local";
+  } catch {
+    return "local";
+  }
+}
+
+function updatePlannerDataSourceCopy(workspace = null) {
+  if (!plannerDataSourceCopy) return;
+  const requestedLabel = plannerDataSourceMode === "live" ? "Firestore" : "local files";
+  const summary = workspace?.summary || {};
+  const actualSource = summary.data_source || "";
+  const actualDetail = summary.data_source_detail || "";
+  const actualLabel = actualSource === "live"
+    ? "Firestore"
+    : actualSource === "snapshot"
+      ? "local snapshot fallback"
+      : "local files";
+  const liveSyncNote = plannerDataSourceMode === "live"
+    ? "Live inventory sync is available."
+    : "Live inventory sync is disabled in local-files mode.";
+  plannerDataSourceCopy.textContent = actualSource
+    ? `Preview is set to ${requestedLabel}. Current load came from ${actualLabel}${actualDetail ? ` (${actualDetail})` : ""}. ${liveSyncNote}`
+    : `Preview is set to ${requestedLabel}. ${liveSyncNote}`;
+  if (updateLiveInventoryBtn instanceof HTMLButtonElement) {
+    updateLiveInventoryBtn.disabled = plannerDataSourceMode !== "live";
+    updateLiveInventoryBtn.title = plannerDataSourceMode === "live" ? "" : "Switch preview data source to Firestore to use live inventory sync.";
+  }
+}
+
+function setStoredPlannerDataSource(mode) {
+  plannerDataSourceMode = mode === "live" ? "live" : "local";
+  try {
+    window.localStorage.setItem(PLANNER_DATA_SOURCE_STORAGE_KEY, plannerDataSourceMode);
+  } catch {
+    // ignore storage failures
+  }
+  if (plannerDataSourceSelect instanceof HTMLSelectElement) {
+    plannerDataSourceSelect.value = plannerDataSourceMode;
+  }
+  updatePlannerDataSourceCopy();
 }
 
 const settingsAuthDialog = document.getElementById("settings-auth-dialog");
@@ -3492,6 +3855,7 @@ async function loadWorkspace() {
   renderSummary(workspace.summary || {}, inventoryUploaded);
   applyDefaults(workspace.defaults || {});
   applyPlannerVariant(workspace.summary || {});
+  updatePlannerDataSourceCopy(workspace);
   await loadMarketingConfig();
   await loadSkuMapping();
   const summary = workspace.summary || {};
@@ -3518,6 +3882,18 @@ async function loadWorkspace() {
   }
 }
 
+applyDataSourceButton?.addEventListener("click", async () => {
+  const nextMode = plannerDataSourceSelect instanceof HTMLSelectElement ? plannerDataSourceSelect.value : "local";
+  setStoredPlannerDataSource(nextMode);
+  setStatus(`Switched preview to ${plannerDataSourceMode === "live" ? "Firestore" : "local files"}. Refreshing...`);
+  try {
+    await loadWorkspace();
+    setStatus(`Preview now using ${plannerDataSourceMode === "live" ? "Firestore" : "local files"}.`);
+  } catch (error) {
+    setStatus(error.message || "Could not switch preview data source.", true);
+  }
+});
+
 async function postJson(url, payload) {
   return await fetchJson(url, {
     method: "POST",
@@ -3539,6 +3915,7 @@ loadSampleBtn.addEventListener("click", async () => {
     inventoryUploaded = Boolean(workspace.inventoryUploaded);
     renderSummary(workspace.summary || {}, inventoryUploaded);
     applyDefaults(workspace.defaults || {});
+    updatePlannerDataSourceCopy(workspace);
     if (payload.plan) {
       renderResults(payload.plan);
     } else {
@@ -3555,6 +3932,10 @@ loadSampleBtn.addEventListener("click", async () => {
 if (updateLiveInventoryBtn) {
   updateLiveInventoryBtn.addEventListener("click", async () => {
     try {
+      if (plannerDataSourceMode !== "live") {
+        setStatus("Switch preview data source to Firestore before running live inventory sync.", true);
+        return;
+      }
       const unlocked = await ensureSettingsUnlocked();
       if (!unlocked) {
         setStatus("Settings are locked.", true);
@@ -3567,6 +3948,7 @@ if (updateLiveInventoryBtn) {
       inventoryUploaded = Boolean(workspace.inventoryUploaded);
       renderSummary(workspace.summary || {}, inventoryUploaded);
       applyDefaults(workspace.defaults || {});
+      updatePlannerDataSourceCopy(workspace);
       if (payload.plan) {
         renderResults(payload.plan);
       } else {
@@ -3871,6 +4253,19 @@ closeForecastSettingsButton.addEventListener("click", () => {
   closeForecastDialog();
 });
 
+forecastDialog?.addEventListener("focusin", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  if (target.type !== "number") return;
+  queueMicrotask(() => {
+    try {
+      target.select();
+    } catch (_error) {
+      // Some browsers can be picky about selection APIs on certain input types.
+    }
+  });
+});
+
 forecastMonthPicker.addEventListener("change", () => {
   loadForecastDialogMonth(forecastMonthPicker.value);
 });
@@ -3894,18 +4289,39 @@ planningYearInput?.addEventListener("change", async () => {
 
 forecastProductMixInputs.addEventListener("input", () => {
   updateForecastMixTotal();
+  syncForecastInputsFromProductLifts({ baselineUnits: baselineUnitsLookup(), readOnly: false });
 });
 
 resetForecastSettingsButton.addEventListener("click", () => {
   const baselineMix = baselineMixLookup();
+  forecastMonthUplift.disabled = false;
   renderForecastProductMixInputs(
-    { productMix: baselineMix },
+    { productMix: baselineMix, productLiftOverrides: defaultProductLiftOverrides() },
     {
       actualMix: baselineMix,
-      actualMixLabel: "Baseline mix",
+      actualMixLabel: "Baseline",
+      baselineUnits: baselineUnitsLookup(),
       readOnly: false,
     },
   );
+  if (forecastLiftGuidance) {
+    forecastLiftGuidance.textContent = "Either set Target uplift, or set Lift % per product (then Target uplift auto-calculates).";
+  }
+});
+
+forecastCopyMixApplyButton?.addEventListener("click", () => {
+  if (!isEditableForecastMonth(activeForecastDialogMonth)) return;
+  const selected = forecastCopyMixMonth instanceof HTMLSelectElement ? String(forecastCopyMixMonth.value || "") : "";
+  if (!selected) {
+    setStatus("Pick an actual month to copy its mix first.", true);
+    return;
+  }
+  const ok = applyCopiedMixFromMonth(selected);
+  if (!ok) {
+    setStatus("Could not copy that month mix. Try a different month.", true);
+    return;
+  }
+  setStatus(`Copied mix from ${monthLabelFromKey(selected)} actuals.`);
 });
 
 saveForecastSettingsButton.addEventListener("click", async () => {
@@ -3915,11 +4331,16 @@ saveForecastSettingsButton.addEventListener("click", async () => {
       setStatus("Product mix should add up to 100%.", true);
       return;
     }
+    const productLiftOverrides = readForecastProductLiftOverrides();
+    const computedFromLifts = calculateForecastFromProductLifts(productLiftOverrides, baselineUnitsLookup());
+    const hasOverrides = CORE_PRODUCTS.some((product) => Math.abs(Number(productLiftOverrides[product] || 0)) > 0.0001);
+    const productMix = Object.fromEntries(
+      Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]")).map((input) => [String(input.dataset.productMix || ""), Number(input.value || 0)]),
+    );
     const setting = {
-      upliftPct: Number(forecastMonthUplift.value || 0),
-      productMix: Object.fromEntries(
-        Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]")).map((input) => [String(input.dataset.productMix || ""), Number(input.value || 0)]),
-      ),
+      upliftPct: hasOverrides ? roundCurrency(computedFromLifts.upliftPct) : Number(forecastMonthUplift.value || 0),
+      productMix,
+      productLiftOverrides,
     };
     const payload = await fetchJson("/api/forecast-settings", {
       method: "POST",
@@ -3952,6 +4373,8 @@ saveSettingsButton?.addEventListener("click", async (event) => {
     });
     sharedPlannerSettings = normalizePlannerSettings(payload.plannerSettings || nextSettings);
     renderPlannerSettings(sharedPlannerSettings);
+    const excludeSpikesInput = document.getElementById("exclude-spikes");
+    if (excludeSpikesInput) excludeSpikesInput.checked = sharedPlannerSettings?.global?.viralSmoothingEnabled ?? true;
     document.getElementById("lead-time-days").value = String(sharedPlannerSettings.global.defaultLeadTimeDays || 8);
     await runPlanningFromForm(false);
     setStatus("Shared planner settings saved.");
@@ -4040,7 +4463,7 @@ historyTabButtons.forEach((button) => {
 railToggle?.addEventListener("click", () => {
   const collapsed = !document.body.classList.contains("rail-collapsed");
   document.body.classList.toggle("rail-collapsed", collapsed);
-  railToggle.textContent = collapsed ? "Expand" : "Collapse";
+  updateRailToggleLabel(collapsed);
   railToggle.setAttribute("aria-expanded", String(!collapsed));
   window.localStorage.setItem(FORECAST_STORAGE_KEY, collapsed ? "true" : "false");
 });
@@ -4056,9 +4479,12 @@ setActiveHistoryTab("monthly");
 if (window.localStorage.getItem(FORECAST_STORAGE_KEY) === "true") {
   document.body.classList.add("rail-collapsed");
   if (railToggle) {
-    railToggle.textContent = "Expand";
+    updateRailToggleLabel(true);
     railToggle.setAttribute("aria-expanded", "false");
   }
+} else {
+  updateRailToggleLabel(false);
 }
 syncHostedKpiAvailability();
+setStoredPlannerDataSource(getStoredPlannerDataSource());
 loadWorkspace().catch((error) => setStatus(error.message || "Could not load workspace.", true));

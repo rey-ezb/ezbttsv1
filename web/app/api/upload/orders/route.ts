@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requestPlannerDataSourceMode } from "@/lib/data-source-mode";
 import { finalizeHostedDemandUploadAudit, saveHostedDemandUpload } from "@/lib/hosted-planner";
 
 export const dynamic = "force-dynamic";
@@ -6,6 +7,7 @@ export const dynamic = "force-dynamic";
 export async function POST(request: NextRequest) {
   try {
     const payload = await request.json();
+    const preferredDataSource = requestPlannerDataSourceMode(request);
     if (payload?.finalize) {
       const result = await finalizeHostedDemandUploadAudit({
         uploadType: "orders",
@@ -15,7 +17,7 @@ export async function POST(request: NextRequest) {
         rowsWritten: Number(payload?.rowsWritten || 0),
         skuRowsWritten: Number(payload?.skuRowsWritten || 0),
         uploadedDates: Array.isArray(payload?.uploadedDates) ? payload.uploadedDates : [],
-      });
+      }, preferredDataSource);
       return NextResponse.json({ ok: true, finalize: result });
     }
     const upload = await saveHostedDemandUpload(
@@ -27,6 +29,7 @@ export async function POST(request: NextRequest) {
         usableRowCount: Number(payload?.sourceRowCount || 0),
         writeAudit: payload?.writeAudit === false ? false : true,
       },
+      preferredDataSource,
     );
     return NextResponse.json({ ok: true, upload });
   } catch (error) {

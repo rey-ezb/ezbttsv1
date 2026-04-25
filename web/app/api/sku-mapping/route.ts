@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
+import { requestPlannerDataSourceMode, resolvePlannerDataSourceMode } from "@/lib/data-source-mode";
 import { normalizeMappedProductName } from "@/lib/sku-mapping";
 import { loadHostedSkuMappingOverrides, saveHostedSkuMappingOverrides } from "@/lib/hosted-planner";
 
@@ -135,12 +136,14 @@ function stringifySkuMappingCsv(rows: RawSkuMappingRow[]) {
   return `${lines.join("\n")}\n`;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const baseCsv = await readFile(BASE_MAPPING_FILE, "utf8").catch(() => "");
+    const preferredDataSource = requestPlannerDataSourceMode(request);
+    const resolvedDataSource = resolvePlannerDataSourceMode(preferredDataSource);
 
     const baseRows = baseCsv ? parseSkuMappingCsvRaw(baseCsv) : [];
-    const overrideRows = (await loadHostedSkuMappingOverrides()).map((row) => ({
+    const overrideRows = (await loadHostedSkuMappingOverrides(preferredDataSource)).map((row) => ({
       ...row,
       product1: canonicalizeMappedProduct(row.product1),
       product2: canonicalizeMappedProduct(row.product2),
@@ -158,6 +161,7 @@ export async function GET() {
       rows: Array.from(merged.values()).sort((a, b) => a.source.localeCompare(b.source) || a.productName.localeCompare(b.productName)),
       baseRows,
       localRows: overrideRows,
+      mode: resolvedDataSource,
     });
   } catch (error) {
     return NextResponse.json(
@@ -171,6 +175,7 @@ export async function POST(request: NextRequest) {
   try {
     const unauthorized = await requireSettingsAuth(request);
     if (unauthorized) return unauthorized;
+    const preferredDataSource = requestPlannerDataSourceMode(request);
 
     const payload = await request.json();
     const rows = Array.isArray(payload?.rows) ? (payload.rows as RawSkuMappingRow[]) : [];
@@ -190,7 +195,7 @@ export async function POST(request: NextRequest) {
     normalized.forEach((row) => unique.set(rowKey(row), row));
 
     const savedRows = Array.from(unique.values());
-    await saveHostedSkuMappingOverrides(savedRows);
+    await saveHostedSkuMappingOverrides(savedRows, preferredDataSource);
 
     return NextResponse.json({ ok: true, rowsWritten: savedRows.length });
   } catch (error) {

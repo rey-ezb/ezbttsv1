@@ -32,11 +32,15 @@ export function computeBaselineDemandByProduct(args: {
   baselineDays: number;
   velocityMode: PlannerVelocityMode;
   excludeSpikes: boolean;
+  excludeSpikesTopDays?: number;
+  excludeSpikesMinSellingDays?: number;
 }) {
   const demandByProduct = new Map<string, DemandStats>();
   const baselineDays = Math.max(1, Math.floor(asNumber(args.baselineDays)));
   const velocityMode = args.velocityMode === "sales_plus_samples" ? "sales_plus_samples" : "sales_only";
   const excludeSpikes = Boolean(args.excludeSpikes);
+  const excludeSpikesTopDays = Math.max(0, Math.floor(asNumber(args.excludeSpikesTopDays ?? 2)));
+  const excludeSpikesMinSellingDays = Math.max(0, Math.floor(asNumber(args.excludeSpikesMinSellingDays ?? 14)));
 
   for (const productName of args.productNames) {
     const salesRows = args.baselineDemandRows.filter((row) => row.product_name === productName);
@@ -65,9 +69,13 @@ export function computeBaselineDemandByProduct(args: {
     let smoothedSalesUnits = salesUnits;
     let daysToUse = baselineDays;
 
-    if (excludeSpikes && activeDaysList.length > 14) {
-      smoothedSalesUnits = salesUnits - activeDaysList[0] - activeDaysList[1];
-      daysToUse = baselineDays - 2;
+    if (excludeSpikes && excludeSpikesTopDays > 0 && activeDaysList.length > excludeSpikesMinSellingDays) {
+      const safeTopDays = Math.max(0, Math.min(excludeSpikesTopDays, baselineDays - 1, activeDaysList.length - 1));
+      if (safeTopDays > 0) {
+        const removed = activeDaysList.slice(0, safeTopDays).reduce((sum, units) => sum + asNumber(units), 0);
+        smoothedSalesUnits = salesUnits - removed;
+        daysToUse = Math.max(1, baselineDays - safeTopDays);
+      }
     }
 
     if (activeDaysList.length > 0 && activeDaysList.length < daysToUse * 0.8) {

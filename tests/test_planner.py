@@ -104,6 +104,35 @@ class PlannerTests(unittest.TestCase):
         chile = daily.loc[daily["product_name"].eq("Chile Colorado Bomb 2-Pack")].iloc[0]
         self.assertEqual(float(chile["net_units"]), 2.0)
 
+    def test_aggregate_daily_demand_does_not_allocate_prelaunch_pozole_verde_units(self) -> None:
+        orders = pd.DataFrame(
+            [
+                {
+                    "platform": "TikTok",
+                    "order_id": "1",
+                    "order_date": pd.Timestamp("2024-11-10"),
+                    "order_status": "Delivered",
+                    "order_substatus": "Delivered",
+                    "cancellation_return_type": "",
+                    "product_name": "Pozole Verde Bomb 2-Pack",
+                    "seller_sku": "SKU-PV",
+                    "seller_sku_resolved": "SKU-PV",
+                    "quantity": 1.0,
+                    "returned_quantity": 0.0,
+                    "net_units": 1.0,
+                    "gross_sales": 19.99,
+                    "is_cancelled": False,
+                    "is_returned": False,
+                },
+            ]
+        )
+
+        daily = aggregate_daily_demand(orders)
+
+        # Verde launches in 2026. Older orders that show the renamed listing should count as regular Pozole.
+        self.assertEqual(set(daily["product_name"]), {"Pozole Bomb 2-Pack"})
+        self.assertEqual(float(daily.iloc[0]["net_units"]), 1.0)
+
     def test_plan_demand_uses_exact_transit_eta_when_deciding_counted_inbound(self) -> None:
         daily = pd.DataFrame(
             [

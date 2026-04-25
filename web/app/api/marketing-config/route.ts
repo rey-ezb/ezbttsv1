@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { usesLocalPlannerData } from "@/lib/data-source-mode";
+import { requestPlannerDataSourceMode, resolvePlannerDataSourceMode } from "@/lib/data-source-mode";
 import { getFirebaseAdminDb } from "@/lib/firebase-admin";
 import { invalidateHostedPlannerCache, __unsafeGetBundledLaunchDefaults } from "@/lib/hosted-planner";
 import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
@@ -118,9 +118,10 @@ async function writeLocalJson(filePath: string, payload: unknown) {
   await writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    if (usesLocalPlannerData()) {
+    const preferredDataSource = requestPlannerDataSourceMode(request);
+    if (resolvePlannerDataSourceMode(preferredDataSource) === "local") {
       const [campaignsRaw, launchPlansRaw] = await Promise.all([
         readLocalJson(LOCAL_CAMPAIGNS_FILE),
         readLocalJson(LOCAL_LAUNCH_PLANS_FILE),
@@ -172,6 +173,7 @@ export async function POST(request: NextRequest) {
   try {
     const unauthorized = await requireSettingsAuth(request);
     if (unauthorized) return unauthorized;
+    const preferredDataSource = requestPlannerDataSourceMode(request);
     const payload = await request.json();
     const marketingConfig = normalizeMarketingConfig(payload?.marketingConfig || payload || {});
 
@@ -219,7 +221,7 @@ export async function POST(request: NextRequest) {
         );
       });
 
-    if (usesLocalPlannerData()) {
+    if (resolvePlannerDataSourceMode(preferredDataSource) === "local") {
       await Promise.all([
         writeLocalJson(LOCAL_CAMPAIGNS_FILE, campaignRows),
         writeLocalJson(LOCAL_LAUNCH_PLANS_FILE, launchOverrideRows),

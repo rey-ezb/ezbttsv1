@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requestPlannerDataSourceMode } from "@/lib/data-source-mode";
 import { saveHostedPlannerSettings } from "@/lib/hosted-planner";
 import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
 
@@ -9,7 +10,8 @@ export async function POST(request: NextRequest) {
     const unauthorized = await requireSettingsAuth(request);
     if (unauthorized) return unauthorized;
     const body = await request.json();
-    const plannerSettings = await saveHostedPlannerSettings(body?.settings || {});
+    const preferredDataSource = requestPlannerDataSourceMode(request);
+    const plannerSettings = await saveHostedPlannerSettings(body?.settings || {}, preferredDataSource);
     return NextResponse.json({
       ok: true,
       plannerSettings,

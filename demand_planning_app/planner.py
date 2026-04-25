@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from demand_planning_app.planning_products import build_primary_sku_lookup, detect_planning_components
+from demand_planning_app.planning_products import build_primary_sku_lookup, detect_planning_components, get_launch_date
 
 DEFAULT_INBOUND_ARRIVAL_DAYS = 5
 DEFAULT_REORDER_LEAD_DAYS = 8
@@ -74,13 +74,28 @@ def aggregate_daily_demand(normalized_orders: pd.DataFrame) -> pd.DataFrame:
     sku_lookup = build_primary_sku_lookup(normalized_orders)
     rows: list[dict[str, Any]] = []
     for row in normalized_orders.to_dict(orient="records"):
+        order_date = pd.Timestamp(row.get("order_date")).normalize()
         components, _reason = detect_planning_components(str(row.get("product_name") or ""))
-        total_multiplier = sum(multiplier for _component_name, multiplier in components) or 0
+        active_components: list[tuple[str, int]] = []
         for component_name, multiplier in components:
+            launch_date = get_launch_date(component_name)
+            if pd.notna(launch_date) and order_date < launch_date:
+                # If TikTok renames a listing later, older orders can show the new name.
+                # For Verde specifically, treat pre-launch mentions as the original Pozole.
+                if component_name == "Pozole Verde Bomb 2-Pack":
+                    active_components.append(("Pozole Bomb 2-Pack", multiplier))
+                continue
+            active_components.append((component_name, multiplier))
+
+        if not active_components:
+            continue
+
+        total_multiplier = sum(multiplier for _component_name, multiplier in active_components) or 0
+        for component_name, multiplier in active_components:
             rows.append(
                 {
                     "platform": str(row.get("platform") or "").strip() or "Unknown",
-                    "date": pd.Timestamp(row.get("order_date")).normalize(),
+                    "date": order_date,
                     "product_name": component_name,
                     "net_units": float(row.get("net_units") or 0.0) * multiplier,
                     "gross_sales": (

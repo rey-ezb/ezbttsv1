@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestPlannerDataSourceMode } from "@/lib/data-source-mode";
 import { getHostedWorkspace, runHostedPlanning, syncHostedInventorySnapshot } from "@/lib/hosted-planner";
 import { requireSettingsAuth } from "@/app/api/_utils/require-settings-auth";
 import { NextRequest } from "next/server";
@@ -9,8 +10,9 @@ export async function POST(request: NextRequest) {
   try {
     const unauthorized = await requireSettingsAuth(request);
     if (unauthorized) return unauthorized;
-    const inventorySync = await syncHostedInventorySnapshot();
-    const workspace = await getHostedWorkspace({ forceRefresh: true });
+    const preferredDataSource = requestPlannerDataSourceMode(request);
+    const inventorySync = await syncHostedInventorySnapshot(preferredDataSource);
+    const workspace = await getHostedWorkspace({ forceRefresh: true, preferredDataSource });
     const plan = await runHostedPlanning(
       {
         baselineStart: workspace.defaults.baselineStart,
@@ -23,7 +25,7 @@ export async function POST(request: NextRequest) {
         planningYear: workspace.defaults.forecastYear,
         monthlyForecastSettings: workspace.defaults.forecastSettings,
       },
-      { forceRefresh: false },
+      { forceRefresh: false, preferredDataSource },
     );
 
     return NextResponse.json({ ok: true, inventorySync, workspace, plan });

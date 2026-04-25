@@ -1,3 +1,5 @@
+import type { NextRequest } from "next/server";
+
 export type PlannerDataSourceMode = "local" | "live";
 
 export function getPlannerDataSourceMode() {
@@ -9,4 +11,22 @@ export function getPlannerDataSourceMode() {
 
 export function usesLocalPlannerData() {
   return getPlannerDataSourceMode() === "local";
+}
+
+export function normalizePlannerDataSourceMode(value: unknown): PlannerDataSourceMode | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "local" || normalized === "snapshot") return "local";
+  if (normalized === "live" || normalized === "firestore") return "live";
+  return null;
+}
+
+export function resolvePlannerDataSourceMode(preferred?: PlannerDataSourceMode | null) {
+  return preferred || getPlannerDataSourceMode();
+}
+
+export function requestPlannerDataSourceMode(request: NextRequest) {
+  return (
+    normalizePlannerDataSourceMode(request.nextUrl.searchParams.get("dataSource")) ||
+    normalizePlannerDataSourceMode(request.headers.get("x-planner-data-source"))
+  );
 }

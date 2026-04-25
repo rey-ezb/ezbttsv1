@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requestPlannerDataSourceMode } from "@/lib/data-source-mode";
 import { getHostedWorkspace, runHostedPlanning } from "@/lib/hosted-planner";
 
 export const dynamic = "force-dynamic";
@@ -6,7 +7,8 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     const forceRefresh = request.nextUrl.searchParams.get("refresh") === "1";
-    const workspace = await getHostedWorkspace({ forceRefresh });
+    const preferredDataSource = requestPlannerDataSourceMode(request);
+    const workspace = await getHostedWorkspace({ forceRefresh, preferredDataSource });
     const plan = await runHostedPlanning(
       {
         baselineStart: workspace.defaults.baselineStart,
@@ -21,11 +23,12 @@ export async function GET(request: NextRequest) {
         monthlyForecastSettings: workspace.defaults.forecastSettings,
         customSettings: workspace.defaults.sharedSettings,
       },
-      { forceRefresh: false },
+      { forceRefresh: false, preferredDataSource },
     );
 
     return NextResponse.json({ ok: true, workspace, plan });
   } catch (error) {
+    console.error("[api/bootstrap] failed", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not load planner bootstrap." },
       { status: 500 },
