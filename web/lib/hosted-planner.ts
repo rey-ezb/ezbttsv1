@@ -191,6 +191,7 @@ const PRODUCT_METADATA: Record<
 };
 
 const CORE_PRODUCT_NAMES = Object.keys(PRODUCT_METADATA);
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const DEFAULT_PLANNER_PRODUCT_SETTINGS: Record<string, PlannerProductSettings> = {
   "Birria Bomb 2-Pack": { cogs: 3.1, moq: 0, casePack: 24, shelfLife: 24 },
@@ -240,6 +241,12 @@ function formatDate(value: Date) {
 function monthKey(value: string | Date) {
   const date = value instanceof Date ? value : toDate(value);
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(key: string) {
+  const match = String(key || "").match(/^(\d{4})-(\d{2})$/);
+  if (!match) return String(key || "");
+  return `${MONTH_LABELS[Math.max(0, Number(match[2]) - 1)]} ${String(match[1]).slice(2)}`;
 }
 
 function addDays(value: string | Date, days: number) {
@@ -1224,6 +1231,9 @@ function buildHistoricalTrend(productMonthly: Map<string, Map<string, number>>, 
   const years = uniqueSorted(
     Array.from(productMonthly.values()).flatMap((months) => Array.from(months.keys()).map((key) => key.slice(0, 4))),
   ).map(Number);
+  const monthKeys = uniqueSorted(
+    Array.from(productMonthly.values()).flatMap((months) => Array.from(months.keys())),
+  );
 
   const monthlyTotals = years.map((year) => {
     const row: Record<string, number> & { year: number; year_total_units: number } = { year, year_total_units: 0 };
@@ -1261,11 +1271,58 @@ function buildHistoricalTrend(productMonthly: Map<string, Map<string, number>>, 
     };
   });
 
+  const trendRows = monthKeys.map((key, index) => {
+    const totalUnits = Array.from(productMonthly.values()).reduce((sum, months) => sum + (months.get(key) || 0), 0);
+    const trailingKeys = monthKeys.slice(Math.max(0, index - 2), index + 1);
+    const rolling3moUnits = trailingKeys.reduce(
+      (sum, monthKeyValue) => sum + Array.from(productMonthly.values()).reduce((monthSum, months) => monthSum + (months.get(monthKeyValue) || 0), 0),
+      0,
+    ) / Math.max(1, trailingKeys.length);
+    const previousYearKey = `${Number(key.slice(0, 4)) - 1}-${key.slice(5, 7)}`;
+    const previousYearUnits = Array.from(productMonthly.values()).reduce((sum, months) => sum + (months.get(previousYearKey) || 0), 0);
+    return {
+      key,
+      label: monthLabel(key),
+      total_units: totalUnits,
+      rolling_3mo_units: rolling3moUnits,
+      previous_year_units: previousYearUnits > 0 ? previousYearUnits : null,
+      yoy_pct: previousYearUnits > 0 ? (totalUnits - previousYearUnits) / previousYearUnits : null,
+    };
+  });
+
+  const overallAverage = trendRows.length ? trendRows.reduce((sum, row) => sum + asNumber(row.total_units), 0) / trendRows.length : 0;
+  const seasonality = Array.from({ length: 12 }, (_, index) => {
+    const monthNumber = index + 1;
+    const values = trendRows
+      .filter((row) => Number(String(row.key || "").slice(5, 7)) === monthNumber)
+      .map((row) => asNumber(row.total_units));
+    const averageUnits = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+    return {
+      month_number: monthNumber,
+      month_label: MONTH_LABELS[index],
+      average_units: averageUnits,
+      seasonality_index: overallAverage > 0 ? averageUnits / overallAverage : 0,
+      years_count: values.length,
+    };
+  });
+
+  const productHistory = Array.from(productMonthly.entries()).map(([productName, months]) => {
+    const row: Record<string, number | string> = { product_name: productName };
+    monthKeys.forEach((key) => {
+      row[key] = months.get(key) || 0;
+    });
+    return row;
+  });
+
   return {
     years,
+    monthKeys,
     monthlyTotals,
     productMonthly: productRows,
     yoyByMonth,
+    trendRows,
+    seasonality,
+    productHistory,
   };
 }
 

@@ -100,12 +100,24 @@ const historicalTotalsHead = document.getElementById("historical-totals-head");
 const historicalTotalsBody = document.getElementById("historical-totals-body");
 const historicalProductsHead = document.getElementById("historical-products-head");
 const historicalProductsBody = document.getElementById("historical-products-body");
+const historicalForecastSignals = document.getElementById("historical-forecast-signals");
+const historicalDemandTrendChart = document.getElementById("historical-demand-trend-chart");
+const historicalDemandTrendProduct = document.getElementById("historical-demand-trend-product");
+const historicalDemandTrendCompareToggle = document.getElementById("historical-demand-trend-compare");
+const historicalDemandTrendComparePanel = document.getElementById("historical-demand-trend-compare-panel");
+const historicalDemandTrendProductB = document.getElementById("historical-demand-trend-product-b");
+const historicalDemandTrendProductC = document.getElementById("historical-demand-trend-product-c");
+const historicalSeasonalityHead = document.getElementById("historical-seasonality-head");
+const historicalSeasonalityBody = document.getElementById("historical-seasonality-body");
+const historicalAnchorHead = document.getElementById("historical-anchor-head");
+const historicalAnchorBody = document.getElementById("historical-anchor-body");
 const historicalYoyHead = document.getElementById("historical-yoy-head");
 const historicalYoyBody = document.getElementById("historical-yoy-body");
 const launchReferenceHead = document.getElementById("launch-reference-head");
 const launchReferenceBody = document.getElementById("launch-reference-body");
 const launchScenariosHead = document.getElementById("launch-scenarios-head");
 const launchScenariosBody = document.getElementById("launch-scenarios-body");
+const launchPlanningSummary = document.getElementById("launch-planning-summary");
 const globalSettingsForm = document.getElementById("global-settings-form");
 const productSettingsBody = document.getElementById("product-settings-body");
 const saveSettingsButton = document.getElementById("btn-save-settings");
@@ -131,12 +143,17 @@ let latestKpiPayload = null;
 let latestPlanPayload = null;
 let activeKpiCard = "grossProductSales";
 let activeKpiCharts = [];
+let activeHistoricalTrendChart = null;
 let activeForecastDialogMonth = "";
 let activeHistoryTab = "monthly";
 let kpisRequested = false;
 let activeHelpTrigger = null;
 let activeLaunchEditId = "";
 let plannerDataSourceMode = "local";
+let activeHistoricalTrendProduct = "__all__";
+let activeHistoricalTrendCompareEnabled = false;
+let activeHistoricalTrendProductB = "";
+let activeHistoricalTrendProductC = "";
 const plannerVariant = new URLSearchParams(window.location.search).get("plannerVariant") || "current";
 const floatingHelpTooltip = document.createElement("div");
 floatingHelpTooltip.className = "app-tooltip";
@@ -300,7 +317,7 @@ function inclusiveDayCount(startDate, endDate) {
 }
 
 function formatDateWindow(startDate, endDate) {
-  if (!startDate) return "—";
+  if (!startDate) return "-";
   if (!endDate) return `${startDate} to Forever`;
   return `${startDate} to ${endDate}`;
 }
@@ -1463,7 +1480,7 @@ function renderForecastCopyMixPicker(monthKey, { editable = true } = {}) {
   const valueToKeep = previous && keys.includes(previous) ? previous : (suggested || "");
 
   forecastCopyMixMonth.innerHTML = [
-    `<option value="">Choose a month…</option>`,
+    `<option value="">Choose a month...</option>`,
     ...keys.map((key) => `<option value="${escapeHtml(key)}">${escapeHtml(monthLabelFromKey(key))} actuals</option>`),
   ].join("");
   forecastCopyMixMonth.value = valueToKeep;
@@ -2122,6 +2139,127 @@ function loadForecastDialogMonth(monthKey) {
   }
 }
 
+function destroyHistoricalTrendChart() {
+  if (activeHistoricalTrendChart) {
+    activeHistoricalTrendChart.destroy();
+    activeHistoricalTrendChart = null;
+  }
+}
+
+function monthLabelFromKey(key) {
+  const match = String(key || "").match(/^(\d{4})-(\d{2})$/);
+  if (!match) return String(key || "");
+  const [, year, month] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
+  return date.toLocaleString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
+}
+
+function average(values) {
+  const numeric = (Array.isArray(values) ? values : []).map((value) => Number(value || 0));
+  if (!numeric.length) return 0;
+  return numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
+}
+
+function stdDev(values) {
+  const numeric = (Array.isArray(values) ? values : []).map((value) => Number(value || 0));
+  if (!numeric.length) return 0;
+  const avg = average(numeric);
+  const variance = numeric.reduce((sum, value) => sum + ((value - avg) ** 2), 0) / numeric.length;
+  return Math.sqrt(variance);
+}
+
+function productTrendOptionsFromPayload(payload) {
+  const productRows = Array.isArray(payload?.productHistory) ? payload.productHistory : Array.isArray(payload?.productMonthly) ? payload.productMonthly : [];
+  const products = productRows.map((row) => String(row.product_name || "")).filter(Boolean);
+  const unique = Array.from(new Set([...(CORE_PRODUCTS || []), ...products].filter(Boolean)));
+  return unique.sort((a, b) => productSortValue(a).localeCompare(productSortValue(b)));
+}
+
+function renderHistoricalTrendProductPicker(payload) {
+  if (!(historicalDemandTrendProduct instanceof HTMLSelectElement)) return;
+  const options = productTrendOptionsFromPayload(payload);
+  const selected = String(activeHistoricalTrendProduct || "__all__");
+  const rendered = [
+    `<option value="__all__">All core products</option>`,
+    ...options.map((product) => `<option value="${escapeHtml(product)}">${escapeHtml(displayProductName(product))}</option>`),
+  ].join("");
+  historicalDemandTrendProduct.innerHTML = rendered;
+  historicalDemandTrendProduct.value = options.includes(selected) ? selected : "__all__";
+  activeHistoricalTrendProduct = historicalDemandTrendProduct.value;
+
+  // Compare pickers (optional)
+  if (historicalDemandTrendProductB instanceof HTMLSelectElement) {
+    const renderedCompare = [
+      `<option value="">None</option>`,
+      ...options.map((product) => `<option value="${escapeHtml(product)}">${escapeHtml(displayProductName(product))}</option>`),
+    ].join("");
+    historicalDemandTrendProductB.innerHTML = renderedCompare;
+    historicalDemandTrendProductB.value = options.includes(activeHistoricalTrendProductB) ? activeHistoricalTrendProductB : "";
+    activeHistoricalTrendProductB = historicalDemandTrendProductB.value;
+  }
+  if (historicalDemandTrendProductC instanceof HTMLSelectElement) {
+    const renderedCompare = [
+      `<option value="">None</option>`,
+      ...options.map((product) => `<option value="${escapeHtml(product)}">${escapeHtml(displayProductName(product))}</option>`),
+    ].join("");
+    historicalDemandTrendProductC.innerHTML = renderedCompare;
+    historicalDemandTrendProductC.value = options.includes(activeHistoricalTrendProductC) ? activeHistoricalTrendProductC : "";
+    activeHistoricalTrendProductC = historicalDemandTrendProductC.value;
+  }
+
+  // Keep compare toggle state consistent
+  if (historicalDemandTrendCompareToggle instanceof HTMLInputElement) {
+    historicalDemandTrendCompareToggle.checked = Boolean(activeHistoricalTrendCompareEnabled);
+  }
+  updateHistoricalTrendCompareVisibility();
+}
+
+function buildProductTrendRows(payload, productName) {
+  const monthKeys = Array.isArray(payload?.monthKeys) ? payload.monthKeys : buildHistoricalTrendRows(payload).map((row) => row.key);
+  const historyRows = Array.isArray(payload?.productHistory) && payload.productHistory.length
+    ? payload.productHistory
+    : (Array.isArray(payload?.productMonthly) ? payload.productMonthly : []);
+  const match = historyRows.find((row) => String(row?.product_name || "") === String(productName || ""));
+  if (!match) return [];
+  return monthKeys.map((key, index) => {
+    const totalUnits = Number(match?.[key] || 0);
+    const trailingKeys = monthKeys.slice(Math.max(0, index - 2), index + 1);
+    const rolling = average(trailingKeys.map((monthKeyValue) => Number(match?.[monthKeyValue] || 0)));
+    const previousYearKey = `${Number(String(key).slice(0, 4)) - 1}-${String(key).slice(5, 7)}`;
+    const previousYearUnits = Number(match?.[previousYearKey] || 0);
+    return {
+      key,
+      label: monthLabelFromKey(key),
+      total_units: totalUnits,
+      rolling_3mo_units: rolling,
+      previous_year_units: previousYearUnits > 0 ? previousYearUnits : null,
+      yoy_pct: previousYearUnits > 0 ? ((totalUnits - previousYearUnits) / previousYearUnits) : null,
+    };
+  });
+}
+
+function updateHistoricalTrendCompareVisibility() {
+  const enabled = Boolean(activeHistoricalTrendCompareEnabled);
+  if (historicalDemandTrendComparePanel) historicalDemandTrendComparePanel.hidden = !enabled;
+  if (!enabled) {
+    activeHistoricalTrendProductB = "";
+    activeHistoricalTrendProductC = "";
+    if (historicalDemandTrendProductB instanceof HTMLSelectElement) historicalDemandTrendProductB.value = "";
+    if (historicalDemandTrendProductC instanceof HTMLSelectElement) historicalDemandTrendProductC.value = "";
+  }
+}
+
+function selectedHistoricalTrendProducts() {
+  const picks = [];
+  const primary = String(activeHistoricalTrendProduct || "__all__");
+  if (primary) picks.push(primary);
+  if (activeHistoricalTrendCompareEnabled) {
+    if (activeHistoricalTrendProductB) picks.push(String(activeHistoricalTrendProductB));
+    if (activeHistoricalTrendProductC) picks.push(String(activeHistoricalTrendProductC));
+  }
+  return Array.from(new Set(picks.filter(Boolean)));
+}
+
 function openForecastDialog() {
   const monthKey = getSelectedPlanningMonthKey() || `${forecastYear}-01`;
   renderForecastMonthPicker();
@@ -2449,7 +2587,7 @@ function renderMonthlyPlan(payload) {
       const isCurrent = Boolean(currentMonthKey && key === currentMonthKey);
       const dominantClass = share >= 0.5 ? " is-dominant" : "";
       return `
-        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(value)} • Share ${percent(share)}">
+        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(value)} - Share ${percent(share)}">
           <div class="month-value-cell${dominantClass}" style="--share:${Math.max(0, Math.min(1, share)).toFixed(4)}">
             <span class="month-value-number">${integer(value)}</span>
             <span class="month-value-share">${percent(share)}</span>
@@ -2467,7 +2605,7 @@ function renderMonthlyPlan(payload) {
       const meta = monthMeta[key] || {};
       const isCurrent = Boolean(currentMonthKey && key === currentMonthKey);
       return `
-        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(totals[key])} • Share 100%">
+        <td class="month-cell${isCurrent ? " is-current" : ""}" data-month-key="${escapeHtml(key)}" data-month-mode="${escapeHtml(meta.mode || "")}" title="Units ${integer(totals[key])} - Share 100%">
           <div class="month-value-cell is-total" style="--share:1">
             <span class="month-value-number">${integer(totals[key])}</span>
             <span class="month-value-share">100%</span>
@@ -2561,6 +2699,377 @@ function renderSkuSalesSummary(payload) {
   skuSalesBody.innerHTML = `${bodyRows}${totalsRow}`;
 }
 
+function buildHistoricalTrendRows(payload) {
+  if (Array.isArray(payload?.trendRows) && payload.trendRows.length) {
+    return payload.trendRows.map((row) => ({
+      key: String(row.key || ""),
+      label: String(row.label || monthLabelFromKey(row.key || "")),
+      total_units: Number(row.total_units || 0),
+      rolling_3mo_units: Number(row.rolling_3mo_units || 0),
+      previous_year_units: row.previous_year_units === null || row.previous_year_units === undefined ? null : Number(row.previous_year_units || 0),
+      yoy_pct: row.yoy_pct === null || row.yoy_pct === undefined ? null : Number(row.yoy_pct),
+    }));
+  }
+  const monthlyTotals = Array.isArray(payload?.monthlyTotals) ? payload.monthlyTotals : [];
+  const monthKeys = Array.from(new Set(monthlyTotals.flatMap((row) => Object.keys(row).filter((key) => /^\d{4}-\d{2}$/.test(key))))).sort();
+  return monthKeys.map((key, index) => {
+    const totalUnits = monthlyTotals.reduce((sum, row) => sum + Number(row?.[key] || 0), 0);
+    const trailing = monthKeys.slice(Math.max(0, index - 2), index + 1).map((monthKey) => monthlyTotals.reduce((sum, row) => sum + Number(row?.[monthKey] || 0), 0));
+    const previousYearKey = `${Number(key.slice(0, 4)) - 1}-${key.slice(5, 7)}`;
+    const previousYearUnits = monthlyTotals.reduce((sum, row) => sum + Number(row?.[previousYearKey] || 0), 0);
+    return {
+      key,
+      label: monthLabelFromKey(key),
+      total_units: totalUnits,
+      rolling_3mo_units: average(trailing),
+      previous_year_units: previousYearUnits > 0 ? previousYearUnits : null,
+      yoy_pct: previousYearUnits > 0 ? ((totalUnits - previousYearUnits) / previousYearUnits) : null,
+    };
+  });
+}
+
+function buildHistoricalSeasonalityRows(payload) {
+  if (Array.isArray(payload?.seasonality) && payload.seasonality.length) {
+    return payload.seasonality.map((row) => ({
+      month_number: Number(row.month_number || 0),
+      month_label: String(row.month_label || ""),
+      average_units: Number(row.average_units || 0),
+      seasonality_index: Number(row.seasonality_index || 0),
+      years_count: Number(row.years_count || 0),
+    }));
+  }
+  const trendRows = buildHistoricalTrendRows(payload);
+  const byMonth = new Map();
+  trendRows.forEach((row) => {
+    const monthNumber = Number(String(row.key || "").slice(5, 7));
+    const bucket = byMonth.get(monthNumber) || [];
+    bucket.push(Number(row.total_units || 0));
+    byMonth.set(monthNumber, bucket);
+  });
+  const overallAverage = average(trendRows.map((row) => row.total_units));
+  return MONTH_LABELS.map((label, index) => {
+    const values = byMonth.get(index + 1) || [];
+    const averageUnits = average(values);
+    return {
+      month_number: index + 1,
+      month_label: label,
+      average_units: averageUnits,
+      seasonality_index: overallAverage > 0 ? averageUnits / overallAverage : 0,
+      years_count: values.length,
+    };
+  });
+}
+
+function buildHistoricalForecastAnchors(payload) {
+  const trendRows = buildHistoricalTrendRows(payload);
+  const monthKeys = Array.isArray(payload?.monthKeys) && payload.monthKeys.length
+    ? payload.monthKeys
+    : trendRows.map((row) => row.key);
+  const selectedMonthKey = getSelectedPlanningMonthKey() || trendRows.at(-1)?.key || "";
+  const selectedMonthNumber = Number(String(selectedMonthKey || "").slice(5, 7) || 0);
+  const seasonalityLookup = new Map(buildHistoricalSeasonalityRows(payload).map((row) => [Number(row.month_number || 0), row]));
+  const historyRows = Array.isArray(payload?.productHistory) && payload.productHistory.length
+    ? payload.productHistory
+    : (Array.isArray(payload?.productMonthly) ? payload.productMonthly : []);
+  const historyKeys = monthKeys.filter((key) => !selectedMonthKey || key < selectedMonthKey);
+  const comparisonMonthKey = selectedMonthNumber
+    ? `${Number(String(selectedMonthKey || "0").slice(0, 4) || 0) - 1}-${String(selectedMonthNumber).padStart(2, "0")}`
+    : "";
+
+  return sortRowsByProductName(historyRows).map((row) => {
+    const series = historyKeys.map((key) => Number(row?.[key] || 0));
+    const recent3Values = series.slice(-3);
+    const recent6Values = series.slice(-6);
+    const recent3 = average(recent3Values);
+    const recent6 = average(recent6Values);
+    const sameMonthLastYear = comparisonMonthKey ? Number(row?.[comparisonMonthKey] || 0) : 0;
+    const volatility = recent6 > 0 ? stdDev(recent6Values) / recent6 : 0;
+    const stability = volatility <= 0.25 ? "Stable" : volatility <= 0.6 ? "Variable" : "Spiky";
+    const seasonality = seasonalityLookup.get(selectedMonthNumber);
+    const seasonalityIndex = Number(seasonality?.seasonality_index || 0);
+    const appliedSeasonality = seasonalityIndex > 0 ? seasonalityIndex : 1;
+
+    let basisKey = "recent6";
+    let basisLabel = "Recent 6-month average";
+    let reasonShort = "History is thin or uneven, so a broader average is safer.";
+    if (stability === "Stable" && recent3 > 0) {
+      basisKey = "recent3";
+      basisLabel = "Recent 3-month average";
+      reasonShort = "Recent demand is steady, so the newest run rate is the clearest baseline.";
+    } else if (sameMonthLastYear > 0 && seasonalityIndex >= 1.08) {
+      basisKey = "blend";
+      basisLabel = "Blend (seasonal recent + last year)";
+      reasonShort = "This month usually runs hot, so we blend recent demand with same-month last year.";
+    } else if (sameMonthLastYear > 0 && stability === "Spiky") {
+      basisKey = "same_month_ly";
+      basisLabel = "Same month last year";
+      reasonShort = "Recent demand is noisy, so season-matched history is a safer baseline.";
+    }
+
+    // Suggested forecast for the selected month.
+    // Rule of thumb:
+    // - If we use a recent average, seasonality adjusts it up/down.
+    // - If we use same month LY, it's already season-matched.
+    // - Blend splits the difference between season-adjusted recent and same month LY.
+    let suggestedUnits = 0;
+    let suggestedMethod = "";
+    let suggestedDetail = "";
+    if (basisKey === "recent3") {
+      suggestedUnits = recent3 * appliedSeasonality;
+      suggestedMethod = seasonalityIndex > 0 ? "Recent 3-mo avg x seasonality" : "Recent 3-mo avg";
+      suggestedDetail = seasonalityIndex > 0
+        ? `${integer(recent3)} x ${number(appliedSeasonality)}x`
+        : `${integer(recent3)} (no seasonality yet)`;
+    } else if (basisKey === "recent6") {
+      suggestedUnits = recent6 * appliedSeasonality;
+      suggestedMethod = seasonalityIndex > 0 ? "Recent 6-mo avg x seasonality" : "Recent 6-mo avg";
+      suggestedDetail = seasonalityIndex > 0
+        ? `${integer(recent6)} x ${number(appliedSeasonality)}x`
+        : `${integer(recent6)} (no seasonality yet)`;
+    } else if (basisKey === "same_month_ly") {
+      suggestedUnits = sameMonthLastYear;
+      suggestedMethod = "Same month last year";
+      suggestedDetail = `${integer(sameMonthLastYear)} (season-matched)`;
+    } else if (basisKey === "blend") {
+      const seasonalRecent = recent6 * appliedSeasonality;
+      suggestedUnits = (seasonalRecent + sameMonthLastYear) / 2;
+      suggestedMethod = "Blend (seasonal recent + last year)";
+      suggestedDetail = `${integer(seasonalRecent)} and ${integer(sameMonthLastYear)} averaged`;
+    }
+
+    const reasonDetailParts = [];
+    reasonDetailParts.push(`Stability: ${stability} (noise score ${integer(volatility * 100)}%).`);
+    if (seasonalityIndex > 0) {
+      reasonDetailParts.push(`Seasonality: ${number(seasonalityIndex)}x for the selected month.`);
+    } else {
+      reasonDetailParts.push("Seasonality: not enough history yet, so we did not adjust.");
+    }
+    if (sameMonthLastYear > 0) {
+      reasonDetailParts.push(`Same month last year: ${integer(sameMonthLastYear)} units.`);
+    } else {
+      reasonDetailParts.push("Same month last year: not available.");
+    }
+    reasonDetailParts.push(`Suggested units: ${integer(suggestedUnits)} (${suggestedDetail}).`);
+    const reasonDetail = reasonDetailParts.join(" ");
+
+    return {
+      product_name: row?.product_name || "",
+      recent_3mo_avg: recent3,
+      recent_6mo_avg: recent6,
+      same_month_last_year_units: sameMonthLastYear,
+      seasonality_index: seasonalityIndex,
+      stability,
+      basis_key: basisKey,
+      basis_label: basisLabel,
+      reason_short: reasonShort,
+      reason_detail: reasonDetail,
+      suggested_units: suggestedUnits,
+      suggested_units_method: suggestedMethod,
+      suggested_units_detail: suggestedDetail,
+    };
+  });
+}
+
+function renderHistoricalForecastSignals(payload) {
+  if (!historicalForecastSignals) return;
+  const trendRows = buildHistoricalTrendRows(payload);
+  const seasonalityRows = buildHistoricalSeasonalityRows(payload);
+  if (!trendRows.length) {
+    historicalForecastSignals.innerHTML = '<div class="empty">Run planning to load forecasting signals.</div>';
+    return;
+  }
+
+  const latest = trendRows.at(-1);
+  const previous3 = average(trendRows.slice(-4, -1).map((row) => row.total_units));
+  const selectedMonthNumber = Number(String(getSelectedPlanningMonthKey() || latest?.key || "").slice(5, 7) || 0);
+  const selectedSeasonality = seasonalityRows.find((row) => Number(row.month_number || 0) === selectedMonthNumber) || null;
+  const anchors = buildHistoricalForecastAnchors(payload);
+  const basisCounts = anchors.reduce((acc, row) => {
+    const key = String(row.basis_key || "");
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const topBasisKey = Object.entries(basisCounts).sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))[0]?.[0] || "";
+  const stableCount = anchors.filter((row) => row.basis_key === "recent3").length;
+  const blendedCount = anchors.filter((row) => row.basis_key === "blend").length;
+  const recent6Count = anchors.filter((row) => row.basis_key === "recent6").length;
+  const sameMonthCount = anchors.filter((row) => row.basis_key === "same_month_ly").length;
+  const latestDirection = previous3 > 0 ? (latest.total_units - previous3) / previous3 : null;
+  const cueLabel = topBasisKey
+    ? topBasisKey === "recent3" ? "Recent trend"
+      : topBasisKey === "recent6" ? "Broader average"
+        : topBasisKey === "same_month_ly" ? "Season matched"
+          : "Blend + seasonality"
+    : "-";
+
+  const cards = [
+    {
+      label: "Recent 3-mo avg",
+      value: integer(average(trendRows.slice(-3).map((row) => row.total_units))),
+      note: "Total units across the latest 3 actual months.",
+    },
+    {
+      label: `${selectedSeasonality?.month_label || "Selected"} seasonality`,
+      value: selectedSeasonality ? `${number(selectedSeasonality.seasonality_index)}x` : "-",
+      note: selectedSeasonality ? "How strong this month tends to be versus an average month." : "Seasonality shows after enough history is loaded.",
+      help: "Seasonality compares this month to an average month.\n\nExample: 0.7x means this month tends to run ~30% lower than average.\n1.2x means this month tends to run ~20% higher than average.\n\nThis is based on your historical monthly totals (not a forecast).",
+    },
+    {
+      label: "Latest month vs prior",
+      value: latestDirection === null ? "-" : pctLabel(latestDirection * 100),
+      note: "Quick direction check before trusting the newest run rate.",
+    },
+    {
+      label: "Suggested units cue",
+      value: cueLabel,
+      note: `Most common basis: ${topBasisKey || "-"}. Stable: ${stableCount}. Blend: ${blendedCount}. Recent 6-mo: ${recent6Count}. Same month LY: ${sameMonthCount}.`,
+      help: "Suggested units cue is a quick summary of what the Suggested units table recommends.\n\nThe basis is the main starting number we trust for a product:\n- Recent 3-mo avg: when demand is steady.\n- Recent 6-mo avg: when demand is noisy or thin.\n- Same month last year: when seasonality matters and recent data is spiky.\n- Blend: when seasonality is strong but recent trend still matters.",
+    },
+  ];
+
+  historicalForecastSignals.innerHTML = cards.map((card) => `
+    <article class="history-signal-card">
+      <div class="history-signal-label-row">
+        <p class="history-signal-label">${escapeHtml(card.label)}</p>
+        ${card.help ? `<button type="button" class="th-help-trigger" data-help="${escapeHtml(card.help)}" aria-label="More info about ${escapeHtml(card.label)}">?</button>` : ""}
+      </div>
+      <strong class="history-signal-value">${escapeHtml(String(card.value))}</strong>
+      <p class="history-signal-note">${escapeHtml(card.note)}</p>
+    </article>
+  `).join("");
+}
+
+function renderHistoricalDemandTrendChart(payload) {
+  destroyHistoricalTrendChart();
+  if (typeof Chart === "undefined" || !(historicalDemandTrendChart instanceof HTMLCanvasElement)) return;
+  const products = selectedHistoricalTrendProducts();
+  if (!products.length) return;
+  const multi = products.length > 1;
+  const palette = ["#35528d", "#f0a429", "#2a9d8f", "#d64550", "#6b7280"];
+  const datasets = [];
+  let labels = null;
+
+  products.forEach((product, index) => {
+    const rows = product === "__all__" ? buildHistoricalTrendRows(payload) : buildProductTrendRows(payload, product);
+    const trendRows = rows.slice(-24);
+    if (!trendRows.length) return;
+    if (!labels) labels = trendRows.map((row) => row.label);
+    const color = palette[index % palette.length];
+    const name = product === "__all__" ? "All core products" : displayProductName(product);
+
+    const showFill = !multi;
+    datasets.push({
+      label: `Actual units (${name})`,
+      data: trendRows.map((row) => Number(row.total_units || 0)),
+      borderColor: color,
+      backgroundColor: showFill ? hexToRgba(color, 0.12) : "transparent",
+      fill: showFill,
+      tension: 0.28,
+      pointRadius: multi ? 0 : 2,
+    });
+    datasets.push({
+      label: `3-mo average (${name})`,
+      data: trendRows.map((row) => Number(row.rolling_3mo_units || 0)),
+      borderColor: color,
+      backgroundColor: "transparent",
+      fill: false,
+      tension: 0.32,
+      pointRadius: 0,
+      borderDash: [6, 4],
+    });
+  });
+
+  if (!labels || !datasets.length) return;
+  activeHistoricalTrendChart = new Chart(historicalDemandTrendChart.getContext("2d"), {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      ...baseChartOptions(),
+      plugins: {
+        ...baseChartOptions().plugins,
+        legend: {
+          ...baseChartOptions().plugins.legend,
+          position: "bottom",
+        },
+      },
+    },
+  });
+}
+
+function renderHistoricalSeasonality(payload) {
+  const rows = buildHistoricalSeasonalityRows(payload);
+  const columns = [
+    ["Month", "month_label", "Calendar month."],
+    ["Avg units", "average_units", "Average total units for that month across the years you have loaded."],
+    ["Seasonality index", "seasonality_index", "Avg units for this month divided by the average month. 1.0x = average. 0.7x = ~30% below average. 1.2x = ~20% above average."],
+    ["Years used", "years_count", "How many years had data for this month (more years = more reliable index)."],
+  ];
+  historicalSeasonalityHead.innerHTML = `<tr>${columns.map(([label, , help]) => renderHeaderCell(label, { help })).join("")}</tr>`;
+  if (!rows.length) {
+    historicalSeasonalityBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">Run planning to load seasonality.</td></tr>`;
+    return;
+  }
+  historicalSeasonalityBody.innerHTML = rows.map((row) => `<tr>${columns.map(([, key]) => {
+    if (key === "month_label") return `<td>${escapeHtml(String(row[key] || ""))}</td>`;
+    if (key === "seasonality_index") return `<td>${number(row[key])}x</td>`;
+    return `<td>${number(row[key])}</td>`;
+  }).join("")}</tr>`).join("");
+}
+
+function renderHistoricalForecastAnchors(payload) {
+  const rows = buildHistoricalForecastAnchors(payload);
+  const columns = [
+    ["Product", "product_name", "Core product name."],
+    ["Suggested units", "suggested_units", "Starting forecast for the selected month."],
+    ["Basis used", "basis_label", "Which history number we trusted most for this product (recent average vs same month last year, etc)."],
+    ["Recent 3-mo avg", "recent_3mo_avg", "Average monthly units across your last 3 closed actual months (before the selected month)."],
+    ["Recent 6-mo avg", "recent_6mo_avg", "Average monthly units across your last 6 closed actual months (before the selected month)."],
+    ["Same month LY", "same_month_last_year_units", "Units for the same calendar month last year (helps when demand is seasonal)."],
+    ["Seasonality", "seasonality_index", "How strong the selected month tends to be vs an average month. 1.2x means higher-than-average month."],
+    ["Stability", "stability", "How consistent the last 6 months are: Stable / Variable / Spiky."],
+    ["Why this suggestion", "reason_short", "Plain-English reason plus a full breakdown (hover) showing what we used and how Suggested units was computed."],
+  ];
+  historicalAnchorHead.innerHTML = `<tr>${columns.map(([label, , help]) => renderHeaderCell(label, { help })).join("")}</tr>`;
+  if (!rows.length) {
+    historicalAnchorBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">Run planning to load forecast anchors.</td></tr>`;
+    return;
+  }
+  historicalAnchorBody.innerHTML = rows.map((row) => `<tr>${columns.map(([, key]) => {
+    if (key === "product_name") return `<td>${escapeHtml(displayProductName(row[key] || ""))}</td>`;
+    if (key === "suggested_units") {
+      const method = String(row.suggested_units_method || "");
+      const detail = String(row.suggested_units_detail || "");
+      const title = [method, detail].filter(Boolean).join(" - ");
+      return `
+        <td title="${escapeHtml(title)}">
+          <div class="cell-stack">
+            <strong>${integer(row[key])}</strong>
+            <span class="muted">${escapeHtml(method || "Suggested units")}</span>
+          </div>
+        </td>
+      `;
+    }
+    if (key === "basis_label") {
+      return `<td>${escapeHtml(String(row[key] || ""))}</td>`;
+    }
+    if (key === "seasonality_index") return `<td>${number(row[key])}x</td>`;
+    if (key === "stability") return `<td>${escapeHtml(String(row[key] || ""))}</td>`;
+    if (key === "reason_short") {
+      const detail = String(row.reason_detail || "");
+      const hint = detail ? "Hover for full breakdown" : "";
+      return `
+        <td title="${escapeHtml(detail)}">
+          <div class="cell-stack">
+            <span>${escapeHtml(String(row[key] || ""))}</span>
+            <span class="muted">${escapeHtml(hint)}</span>
+          </div>
+        </td>
+      `;
+    }
+    return `<td>${number(row[key])}</td>`;
+  }).join("")}</tr>`).join("");
+}
+
 function renderHistoricalTrend(payload, focusYear) {
   const years = payload.years || [];
   const monthlyTotals = payload.monthlyTotals || [];
@@ -2571,6 +3080,12 @@ function renderHistoricalTrend(payload, focusYear) {
       ? `Shows actual units for ${years.join(", ")}. Product detail focuses on ${focusYear}.`
       : "Run planning to load actual history.";
   }
+
+  renderHistoricalForecastSignals(payload);
+  renderHistoricalTrendProductPicker(payload);
+  renderHistoricalDemandTrendChart(payload);
+  renderHistoricalSeasonality(payload);
+  renderHistoricalForecastAnchors(payload);
 
   const totalColumns = [["Year", "year"], ...MONTH_LABELS.map((label, index) => [`${label}`, `${Number(focusYear) - 2}-${String(index + 1).padStart(2, "0")}`]), ["Year total", "year_total_units"]];
   if (years.length) {
@@ -2608,7 +3123,7 @@ function renderHistoricalTrend(payload, focusYear) {
   } else {
     historicalYoyBody.innerHTML = yoyByMonth.map((row) => `<tr>${yoyColumns.map(([, key]) => {
       if (key === "label") return `<td>${row[key] || ""}</td>`;
-      if (key === "yoy_pct") return `<td>${row[key] === null || row[key] === undefined ? "—" : percent(row[key])}</td>`;
+      if (key === "yoy_pct") return `<td>${row[key] === null || row[key] === undefined ? "-" : percent(row[key])}</td>`;
       return `<td>${number(row[key])}</td>`;
     }).join("")}</tr>`).join("");
   }
@@ -2620,6 +3135,57 @@ function renderLaunchPlanning(payload) {
     launchPlanningCopy.textContent = rows.length
       ? "Use the proxy launch curve to compare what you already sent versus low, base, and high demand cases."
       : "Run planning to load launch references and send scenarios.";
+  }
+  if (launchPlanningSummary) {
+    if (!rows.length) {
+      launchPlanningSummary.innerHTML = '<div class="empty">Run planning to load launch summary.</div>';
+    } else {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const withDates = rows
+        .filter((row) => String(row.launch_date || "").slice(0, 10))
+        .map((row) => ({ ...row, launch_date: String(row.launch_date || "").slice(0, 10) }))
+        .sort((a, b) => String(a.launch_date).localeCompare(String(b.launch_date)));
+      const upcoming = withDates.find((row) => row.launch_date >= todayIso) || withDates[withDates.length - 1];
+      const productName = String(upcoming.product_name || "");
+      const launchDate = String(upcoming.launch_date || "");
+      const committed = Number(upcoming.launch_units_committed || 0);
+      const baseDaily = Number(upcoming.base_daily_velocity || 0);
+      const baseWeeks = Number(upcoming.base_weeks_of_cover || 0);
+      const proxyName = String(upcoming.proxy_product_name || "");
+      const explanation = [
+        "How this works:",
+        "1) Reference table shows what your proxy product did in its first 7/14/30 days.",
+        "2) Scenario table converts your committed units into weeks of cover using low/base/high daily velocities.",
+      ].join("\n");
+      launchPlanningSummary.innerHTML = `
+        <div class="launch-summary-grid">
+          <article class="launch-summary-card">
+            <p class="launch-summary-label">Nearest launch</p>
+            <strong class="launch-summary-value">${escapeHtml(displayProductName(productName) || "—")}</strong>
+            <p class="launch-summary-note">${launchDate ? `Launch date: ${escapeHtml(launchDate)}` : "Launch date: —"}</p>
+          </article>
+          <article class="launch-summary-card">
+            <p class="launch-summary-label">Committed units</p>
+            <strong class="launch-summary-value">${integer(committed)}</strong>
+            <p class="launch-summary-note">Units you plan to have available for the launch.</p>
+          </article>
+          <article class="launch-summary-card">
+            <p class="launch-summary-label">Base weeks of cover</p>
+            <strong class="launch-summary-value">${baseDaily > 0 ? number(baseWeeks) : "—"}</strong>
+            <p class="launch-summary-note">${baseDaily > 0 ? `At ~${number(baseDaily)}/day.` : "Needs baseline demand to estimate velocity."}</p>
+          </article>
+          <article class="launch-summary-card">
+            <p class="launch-summary-label">Proxy product</p>
+            <strong class="launch-summary-value">${escapeHtml(displayProductName(proxyName) || "—")}</strong>
+            <p class="launch-summary-note">We use this product's early curve as a reference.</p>
+          </article>
+        </div>
+        <div class="launch-summary-helper">
+          <span class="launch-summary-helper-title">How to read this</span>
+          <button type="button" class="th-help-trigger" data-help="${escapeHtml(explanation)}" aria-label="How to read launch planning">?</button>
+        </div>
+      `;
+    }
   }
 
   const referenceColumns = [
@@ -2772,6 +3338,15 @@ function baseChartOptions() {
       },
     },
   };
+}
+
+function hexToRgba(hex, alpha) {
+  const raw = String(hex || "").replace("#", "").trim();
+  if (raw.length !== 6) return `rgba(53,82,141,${alpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${Number.isFinite(r) ? r : 53},${Number.isFinite(g) ? g : 82},${Number.isFinite(b) ? b : 141},${alpha})`;
 }
 
 function buildLineChart(rows, series, dateKey = "reporting_date") {
@@ -4458,6 +5033,39 @@ railButtons.forEach((button) => {
 
 historyTabButtons.forEach((button) => {
   button.addEventListener("click", () => setActiveHistoryTab(button.dataset.historyTab || "monthly"));
+});
+
+historicalDemandTrendProduct?.addEventListener("change", () => {
+  if (!(historicalDemandTrendProduct instanceof HTMLSelectElement)) return;
+  activeHistoricalTrendProduct = historicalDemandTrendProduct.value || "__all__";
+  if (latestPlanPayload?.historicalTrend) {
+    renderHistoricalDemandTrendChart(latestPlanPayload.historicalTrend);
+  }
+});
+
+historicalDemandTrendCompareToggle?.addEventListener("change", () => {
+  if (!(historicalDemandTrendCompareToggle instanceof HTMLInputElement)) return;
+  activeHistoricalTrendCompareEnabled = Boolean(historicalDemandTrendCompareToggle.checked);
+  updateHistoricalTrendCompareVisibility();
+  if (latestPlanPayload?.historicalTrend) {
+    renderHistoricalDemandTrendChart(latestPlanPayload.historicalTrend);
+  }
+});
+
+historicalDemandTrendProductB?.addEventListener("change", () => {
+  if (!(historicalDemandTrendProductB instanceof HTMLSelectElement)) return;
+  activeHistoricalTrendProductB = historicalDemandTrendProductB.value || "";
+  if (latestPlanPayload?.historicalTrend) {
+    renderHistoricalDemandTrendChart(latestPlanPayload.historicalTrend);
+  }
+});
+
+historicalDemandTrendProductC?.addEventListener("change", () => {
+  if (!(historicalDemandTrendProductC instanceof HTMLSelectElement)) return;
+  activeHistoricalTrendProductC = historicalDemandTrendProductC.value || "";
+  if (latestPlanPayload?.historicalTrend) {
+    renderHistoricalDemandTrendChart(latestPlanPayload.historicalTrend);
+  }
 });
 
 railToggle?.addEventListener("click", () => {

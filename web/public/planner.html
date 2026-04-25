@@ -259,6 +259,7 @@
             </div>
             <div class="workspace-tab-strip history-tab-strip" id="history-tab-strip">
               <button type="button" class="workspace-tab is-active" data-history-tab="monthly">Monthly plan</button>
+              <button type="button" class="workspace-tab" data-history-tab="suggested-units">Suggested units</button>
               <button type="button" class="workspace-tab" data-history-tab="baseline">Baseline mix</button>
               <button type="button" class="workspace-tab" data-history-tab="sku-sales">SKU sales</button>
               <button type="button" class="workspace-tab" data-history-tab="trends">Historical trends</button>
@@ -278,6 +279,24 @@
                     <thead id="monthly-plan-head"></thead>
                     <tbody id="monthly-plan-body">
                       <tr><td colspan="14" class="empty">Run planning to see Jan to Dec units.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="history-tab-panel" data-history-panel="suggested-units">
+                <div class="panel-header panel-header-inner">
+                  <div>
+                    <p class="eyebrow">Suggested units</p>
+                    <h3>Starting forecast for the selected month</h3>
+                    <p class="panel-subcopy">This is the recommended monthly starting point per product. It is calculated from recent averages, last year's same month, and seasonality.</p>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table id="historical-anchor-table" class="data-grid">
+                    <thead id="historical-anchor-head"></thead>
+                    <tbody id="historical-anchor-body">
+                      <tr><td colspan="9" class="empty">Run planning to load suggested units.</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -327,6 +346,50 @@
                     <p class="panel-subcopy" id="historical-trend-copy">Review actual demand from prior years without making the page longer.</p>
                   </div>
                 </div>
+                <section class="history-card">
+                  <div class="panel-header panel-header-inner">
+                    <div>
+                      <p class="eyebrow">Forecast helpers</p>
+                      <h3>What history says about the next forecast</h3>
+                    </div>
+                  </div>
+                  <div class="history-forecast-signals" id="historical-forecast-signals">
+                    <div class="empty">Run planning to load forecasting signals.</div>
+                  </div>
+                </section>
+                <section class="history-card">
+                  <div class="panel-header panel-header-inner">
+                    <div>
+                      <p class="eyebrow">Demand trend</p>
+                      <h3>Last 24 months with smoothed baseline</h3>
+                    </div>
+                    <div class="history-chart-controls">
+                      <div class="history-chart-controls-row">
+                        <label class="history-chart-label-inline">
+                          <span>Product</span>
+                          <select id="historical-demand-trend-product"></select>
+                        </label>
+                        <label class="history-chart-compare-toggle" title="Overlay multiple products on the chart">
+                          <input type="checkbox" id="historical-demand-trend-compare">
+                          Compare
+                        </label>
+                      </div>
+                      <div class="history-chart-compare-panel" id="historical-demand-trend-compare-panel" hidden>
+                        <label class="history-chart-label-inline">
+                          <span>Compare #2</span>
+                          <select id="historical-demand-trend-product-b"></select>
+                        </label>
+                        <label class="history-chart-label-inline">
+                          <span>Compare #3</span>
+                          <select id="historical-demand-trend-product-c"></select>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="chart-shell history-chart-shell">
+                    <canvas id="historical-demand-trend-chart" class="chart-canvas" aria-label="Historical demand trend chart"></canvas>
+                  </div>
+                </section>
                 <div class="history-tab-panels history-tab-panels-nested">
                   <section class="history-card">
                     <div class="panel-header panel-header-inner">
@@ -363,6 +426,23 @@
                   <section class="history-card">
                     <div class="panel-header panel-header-inner">
                       <div>
+                        <p class="eyebrow">Seasonality</p>
+                        <h3>Average month strength across history</h3>
+                        <p class="panel-subcopy">Shows how each calendar month compares to an average month. Use this when deciding if an upcoming month should be higher or lower than the recent average.</p>
+                      </div>
+                    </div>
+                    <div class="table-wrap">
+                      <table id="historical-seasonality-table" class="data-grid">
+                        <thead id="historical-seasonality-head"></thead>
+                        <tbody id="historical-seasonality-body">
+                          <tr><td colspan="4" class="empty">Run planning to load seasonality.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                  <section class="history-card">
+                    <div class="panel-header panel-header-inner">
+                      <div>
                         <p class="eyebrow">Year over year</p>
                         <h3>Selected year vs previous year</h3>
                       </div>
@@ -387,6 +467,18 @@
                     <p class="panel-subcopy" id="launch-planning-copy">Review proxy launch curves and coverage assumptions for new products.</p>
                   </div>
                 </div>
+                <section class="history-card">
+                  <div class="panel-header panel-header-inner">
+                    <div>
+                      <p class="eyebrow">Summary</p>
+                      <h3>Nearest launch and how to read this</h3>
+                      <p class="panel-subcopy">This section is for sanity-checking a new SKU send using a proxy product curve and your committed inbound units.</p>
+                    </div>
+                  </div>
+                  <div class="launch-summary" id="launch-planning-summary">
+                    <div class="empty">Run planning to load launch summary.</div>
+                  </div>
+                </section>
                 <div class="launch-planning-grid" id="launch-planning-grid">
                   <section class="history-card">
                     <div class="panel-header panel-header-inner">
@@ -493,7 +585,7 @@
               <div>
                 <p class="eyebrow">Marketing</p>
                 <h2>Launch Planning</h2>
-                <p class="panel-subcopy">Introducing a new product? Borrow velocity from an existing “proxy” product and simulate demand before you have real sales history.</p>
+                <p class="panel-subcopy">Introducing a new product? Borrow velocity from an existing "proxy" product and simulate demand before you have real sales history.</p>
               </div>
             </div>
 
