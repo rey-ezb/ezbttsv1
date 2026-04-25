@@ -1591,6 +1591,12 @@ export async function runHostedPlanning(params: {
 
     const daysOfOnHand = forecastDailyDemand > 0 ? onHand / forecastDailyDemand : Infinity;
     const daysOfSupply = forecastDailyDemand > 0 ? currentSupply / forecastDailyDemand : Infinity;
+
+    // "Recent" supply uses the baseline (history-derived) velocity, not the month plan mix.
+    // This helps planners sanity-check whether the month plan is materially changing the run rate.
+    const recentDailyDemand = demand.avgDailyDemand;
+    const daysOfSupplyRecent = recentDailyDemand > 0 ? currentSupply / recentDailyDemand : null;
+    const weeksOfSupplyRecent = recentDailyDemand > 0 ? currentSupply / (recentDailyDemand * 7) : null;
     const onHandStockoutDate = daysOfOnHand !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfOnHand))) : null;
     const projectedStockout = daysOfSupply !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfSupply))) : null;
     let transitGapDays = 0;
@@ -1646,6 +1652,7 @@ export async function runHostedPlanning(params: {
       transit_eta: transitEta,
       current_supply_units: currentSupply,
       weeks_of_supply: forecastDailyDemand > 0 ? currentSupply / (forecastDailyDemand * 7) : null,
+      weeks_of_supply_recent: weeksOfSupplyRecent,
       safety_stock_units: safetyStockUnits,
       safety_stock_weeks: safetyWeeks,
       projected_stockout_date: projectedStockout,
@@ -1666,6 +1673,7 @@ export async function runHostedPlanning(params: {
       estimated_cogs: demand.salesUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
       capital_required: recommendedOrderUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
       days_of_supply: daysOfSupply !== Infinity ? daysOfSupply : null,
+      days_of_supply_recent: daysOfSupplyRecent,
       days_on_hand: daysOfOnHand !== Infinity ? daysOfOnHand : null,
       horizon_start: horizonStart,
       horizon_end: horizonEnd,

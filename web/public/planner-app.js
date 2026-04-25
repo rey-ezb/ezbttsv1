@@ -225,9 +225,11 @@ function clampNumber(value, fallback = null) {
 function formatSupplyLeftLabel(row) {
   const days = clampNumber(row?.days_of_supply, null);
   const weeks = clampNumber(row?.weeks_of_supply, null);
+  const recentWeeks = clampNumber(row?.weeks_of_supply_recent, null);
   if (days === null && weeks === null) return "-";
   const daysRounded = days === null ? null : Math.max(0, Math.round(days));
   const weeksRounded = weeks === null ? null : Math.max(0, Number(weeks));
+  const recentWeeksRounded = recentWeeks === null ? null : Math.max(0, Number(recentWeeks));
 
   // Prefer days for near-term decisions; prefer weeks for longer horizons.
   const preferDays = daysRounded !== null && daysRounded < 28;
@@ -236,9 +238,16 @@ function formatSupplyLeftLabel(row) {
     : weeksRounded === null
       ? `${integer(daysRounded)} days`
       : `${number(weeksRounded)} wks`;
-  const secondary = preferDays
+  const baseSecondary = preferDays
     ? (weeksRounded === null ? "" : `(${number(weeksRounded)} wks)`)
     : (daysRounded === null ? "" : `(~${integer(daysRounded)} days)`);
+
+  // Most confusion comes from month-plan mix changing the demand rate.
+  // Show the baseline (recent) weeks as a sanity-check.
+  const recentNote = recentWeeksRounded === null ? "" : `recent: ${number(recentWeeksRounded)}w`;
+  const secondary = baseSecondary
+    ? (recentNote ? `${baseSecondary} | ${recentNote}` : baseSecondary)
+    : recentNote;
 
   return { primary, secondary };
 }
@@ -1062,7 +1071,7 @@ const HEADER_HELP = {
   "Lead time used": "Lead time used in the math for this row. The planner uses historical transit lead time when it can infer one, otherwise it falls back to the shared default lead time.",
   "Transit gap": "Estimated number of days where on-hand inventory runs out before the current inbound ETA arrives.",
   "Usable supply": "Supply we can count for planning right now: on hand plus inbound expected in time.",
-  "Supply left": "How long the usable supply should last at the current daily velocity. Shows both weeks and days (days matter most when under ~4 weeks).",
+  "Supply left": "How long the usable supply should last using the forecast daily demand (month plan uplift + mix, plus any campaign lifts). The cell also shows the recent (history-based) weeks so you can sanity-check big mix changes.",
   "Safety stock": "Extra units kept as protection before the next order should arrive.",
   "Projected stockout date": "Projected stockout date if demand keeps moving at the current rate (also shows a day countdown).",
   "Order-by date": "Latest date to place the order so lead time and safety stock are covered (also shows a day countdown).",
