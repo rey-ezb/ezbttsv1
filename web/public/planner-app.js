@@ -217,6 +217,41 @@ function integer(value) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Number(value));
 }
 
+function clampNumber(value, fallback = null) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function formatSupplyLeftLabel(row) {
+  const days = clampNumber(row?.days_of_supply, null);
+  const weeks = clampNumber(row?.weeks_of_supply, null);
+  if (days === null && weeks === null) return "-";
+  const daysRounded = days === null ? null : Math.max(0, Math.round(days));
+  const weeksRounded = weeks === null ? null : Math.max(0, Number(weeks));
+
+  // Prefer days for near-term decisions; prefer weeks for longer horizons.
+  const preferDays = daysRounded !== null && daysRounded < 28;
+  const primary = preferDays
+    ? `${integer(daysRounded)} days`
+    : weeksRounded === null
+      ? `${integer(daysRounded)} days`
+      : `${number(weeksRounded)} wks`;
+  const secondary = preferDays
+    ? (weeksRounded === null ? "" : `(${number(weeksRounded)} wks)`)
+    : (daysRounded === null ? "" : `(~${integer(daysRounded)} days)`);
+
+  return { primary, secondary };
+}
+
+function formatCountdownLabel(daysValue) {
+  const days = clampNumber(daysValue, null);
+  if (days === null) return "";
+  const rounded = Math.round(days);
+  if (!Number.isFinite(rounded)) return "";
+  if (rounded <= 0) return "today";
+  return `${integer(rounded)}d`;
+}
+
 function money(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "$0";
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Number(value));
@@ -1027,10 +1062,10 @@ const HEADER_HELP = {
   "Lead time used": "Lead time used in the math for this row. The planner uses historical transit lead time when it can infer one, otherwise it falls back to the shared default lead time.",
   "Transit gap": "Estimated number of days where on-hand inventory runs out before the current inbound ETA arrives.",
   "Usable supply": "Supply we can count for planning right now: on hand plus inbound expected in time.",
-  "Weeks good": "How many weeks the usable supply should last at the current daily velocity.",
+  "Supply left": "How long the usable supply should last at the current daily velocity. Shows both weeks and days (days matter most when under ~4 weeks).",
   "Safety stock": "Extra units kept as protection before the next order should arrive.",
-  "Projected stockout date": "Projected stockout date if demand keeps moving at the current rate.",
-  "Order-by date": "Latest date to place the order so lead time and safety stock are covered.",
+  "Projected stockout date": "Projected stockout date if demand keeps moving at the current rate (also shows a day countdown).",
+  "Order-by date": "Latest date to place the order so lead time and safety stock are covered (also shows a day countdown).",
   "Order today": "Recommended units to order today after supply, lead time, and safety stock are applied.",
   "Capital needed": "Estimated cash needed for the recommended order: recommended_order_units * unit_cogs.",
   "Units in baseline window": "Actual units sold during the selected baseline date range.",
@@ -2365,7 +2400,7 @@ function renderResults(payload) {
         ["Lead time used", "used_lead_time_days"],
         ["Transit gap", "transit_gap_days"],
         ["Usable supply", "current_supply_units"],
-        ["Weeks good", "weeks_of_supply"],
+        ["Supply left", "weeks_of_supply"],
         ["Safety stock", "safety_stock_units"],
         ["Projected stockout date", "projected_stockout_date"],
         ["Order-by date", "reorder_date"],
@@ -2391,7 +2426,7 @@ function renderResults(payload) {
         ["Lead time used", "used_lead_time_days"],
         ["Transit gap", "transit_gap_days"],
         ["Usable supply", "current_supply_units"],
-        ["Weeks good", "weeks_of_supply"],
+        ["Supply left", "weeks_of_supply"],
         ["Safety stock", "safety_stock_units"],
         ["Projected stockout date", "projected_stockout_date"],
         ["Order-by date", "reorder_date"],
@@ -2439,6 +2474,41 @@ function renderResults(payload) {
     if (key === "status") return `<span class="status status-${String(row.status || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}">${row.status || ""}</span>`;
     if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required") return money(row[key]);
     if (key === "mix_pct") return percent(row[key]);
+    if (key === "weeks_of_supply") {
+      const label = formatSupplyLeftLabel(row);
+      if (typeof label === "string") return escapeHtml(label);
+      return `
+        <span class="cell-split">
+          <span class="cell-split-main">${escapeHtml(label.primary)}</span>
+          <span class="cell-split-meta">${escapeHtml(label.secondary)}</span>
+        </span>
+      `.trim();
+    }
+    if (key === "projected_stockout_date") {
+      const date = humanDate(row[key] || "");
+      const countdown = formatCountdownLabel(row.days_of_supply);
+      if (!date) return "-";
+      return `
+        <span class="cell-split">
+          <span class="cell-split-main">${escapeHtml(date)}</span>
+          <span class="cell-split-meta">${escapeHtml(countdown ? `(${countdown})` : "")}</span>
+        </span>
+      `.trim();
+    }
+    if (key === "reorder_date") {
+      const date = humanDate(row[key] || "");
+      const daysOfSupply = clampNumber(row.days_of_supply, null);
+      const leadTimeDays = clampNumber(row.used_lead_time_days, null);
+      const daysUntil = daysOfSupply !== null && leadTimeDays !== null ? (daysOfSupply - leadTimeDays) : null;
+      const countdown = daysUntil === null ? "" : (daysUntil < 0 ? "overdue" : formatCountdownLabel(daysUntil));
+      if (!date) return "-";
+      return `
+        <span class="cell-split">
+          <span class="cell-split-main">${escapeHtml(date)}</span>
+          <span class="cell-split-meta">${escapeHtml(countdown ? `(${countdown})` : "")}</span>
+        </span>
+      `.trim();
+    }
     if (key === "safety_stock_units") {
       return `
         <span class="cell-split">
@@ -2448,7 +2518,7 @@ function renderResults(payload) {
       `.trim();
     }
     if (key === "product_name") return displayProductName(row[key] || "");
-    if (["projected_stockout_date", "reorder_date", "transit_eta", "transit_started_on"].includes(key)) return humanDate(row[key] || "");
+    if (["transit_eta", "transit_started_on"].includes(key)) return humanDate(row[key] || "");
     return number(row[key]);
   };
   const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => `<td>${renderCell(key, row)}</td>`).join("")}</tr>`).join("");
