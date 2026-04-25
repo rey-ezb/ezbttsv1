@@ -1597,12 +1597,17 @@ export async function runHostedPlanning(params: {
     const recentDailyDemand = demand.avgDailyDemand;
     const daysOfSupplyRecent = recentDailyDemand > 0 ? currentSupply / recentDailyDemand : null;
     const weeksOfSupplyRecent = recentDailyDemand > 0 ? currentSupply / (recentDailyDemand * 7) : null;
+    const daysOfOnHandRecent = recentDailyDemand > 0 ? onHand / recentDailyDemand : null;
+    const weeksOfOnHandRecent = recentDailyDemand > 0 ? onHand / (recentDailyDemand * 7) : null;
+    const weeksOnHand = forecastDailyDemand > 0 ? onHand / (forecastDailyDemand * 7) : null;
     const onHandStockoutDate = daysOfOnHand !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfOnHand))) : null;
     const projectedStockout = daysOfSupply !== Infinity ? formatDate(addDays(snapshotDate, Math.floor(daysOfSupply))) : null;
     let transitGapDays = 0;
     if (inTransit > 0 && transitEta && onHandStockoutDate) {
-      const etaDays = daysInclusive(snapshotDate, transitEta);
-      if (etaDays > daysOfOnHand) transitGapDays = Math.floor(etaDays - daysOfOnHand);
+      // daysInclusive(start,end) returns 1 when dates are the same day.
+      // For "gap" math we want 0 when ETA is today/same snapshot date.
+      const etaDaysAway = Math.max(0, daysInclusive(snapshotDate, transitEta) - 1);
+      if (etaDaysAway > daysOfOnHand) transitGapDays = Math.floor(etaDaysAway - daysOfOnHand);
     }
     const reorderDate = projectedStockout ? formatDate(addDays(projectedStockout, -activeLeadTimeDays)) : null;
     const shelfLifeMonths = asNumber(getProductSetting(productName, "shelfLife", globalSettings.defaultExpiryMonths || 24));
@@ -1651,7 +1656,9 @@ export async function runHostedPlanning(params: {
       used_lead_time_days: activeLeadTimeDays,
       transit_eta: transitEta,
       current_supply_units: currentSupply,
+      weeks_on_hand: weeksOnHand,
       weeks_of_supply: forecastDailyDemand > 0 ? currentSupply / (forecastDailyDemand * 7) : null,
+      weeks_on_hand_recent: weeksOfOnHandRecent,
       weeks_of_supply_recent: weeksOfSupplyRecent,
       safety_stock_units: safetyStockUnits,
       safety_stock_weeks: safetyWeeks,
@@ -1673,6 +1680,7 @@ export async function runHostedPlanning(params: {
       estimated_cogs: demand.salesUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
       capital_required: recommendedOrderUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
       days_of_supply: daysOfSupply !== Infinity ? daysOfSupply : null,
+      days_on_hand_recent: daysOfOnHandRecent,
       days_of_supply_recent: daysOfSupplyRecent,
       days_on_hand: daysOfOnHand !== Infinity ? daysOfOnHand : null,
       horizon_start: horizonStart,

@@ -7,11 +7,22 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/planner-styles.css?v=20260425q">
+    <link rel="stylesheet" href="/planner-styles.css?v=20260425r">
   </head>
   <body>
     <div class="ambient ambient-one"></div>
     <div class="ambient ambient-two"></div>
+
+    <div class="app-loading-overlay" id="app-loading-overlay" hidden aria-live="polite" aria-label="Loading">
+      <div class="app-loading-card glass-sheen">
+        <span class="app-loading-spinner" aria-hidden="true"></span>
+        <div>
+          <strong class="app-loading-title" id="app-loading-message">Working...</strong>
+          <div class="app-loading-subtitle">Please wait.</div>
+        </div>
+      </div>
+    </div>
+
     <div class="shell">
       <aside class="rail glass-sheen" id="app-rail">
         <div class="rail-top">
@@ -221,6 +232,12 @@
               <div>
                 <p class="eyebrow">Results</p>
                 <h2>Reorder recommendations</h2>
+                <p class="panel-subcopy">Cover is shown two ways: on-hand cover uses recent baseline velocity; total cover uses your planned velocity and includes in-transit units. Hover the “?” to see the exact assumptions.</p>
+              </div>
+              <div class="panel-tabs panel-tabs-results" role="tablist" aria-label="Results views">
+                <span class="panel-tabs-label" role="presentation" aria-hidden="true">View</span>
+                <button type="button" class="panel-tab is-active" data-results-tab="reorder" role="tab" aria-selected="true">Reorder</button>
+                <button type="button" class="panel-tab" data-results-tab="status" role="tab" aria-selected="false">Status</button>
               </div>
               <div class="result-summary" id="result-summary"></div>
             </div>
@@ -238,8 +255,8 @@
             <div class="panel-header panel-header-history">
               <div>
                 <p class="eyebrow">Historical Trends</p>
-                <h2>Monthly plan and baseline mix</h2>
-                <p class="panel-subcopy" id="history-section-copy">Switch between the year view and the baseline mix table without making the page longer.</p>
+                <h2>History &amp; planning inputs</h2>
+                <p class="panel-subcopy" id="history-section-copy">Switch between the year plan, forecast starting point, baseline mix, SKU sales, and historical demand without making the page longer.</p>
                 <div class="planner-compare-links">
                   <a class="planner-compare-link" id="planner-compare-link" href="/planner.html?plannerVariant=year-jump">Compare with 1-click year view</a>
                   <a class="planner-compare-link" id="planner-current-link" href="/planner.html">Back to current view</a>
@@ -263,7 +280,7 @@
               <button type="button" class="workspace-tab" data-history-tab="baseline">Baseline mix</button>
               <button type="button" class="workspace-tab" data-history-tab="sku-sales">SKU sales</button>
               <button type="button" class="workspace-tab" data-history-tab="trends">Historical trends</button>
-              <button type="button" class="workspace-tab" data-history-tab="launch">Launch planning</button>
+              <button type="button" class="workspace-tab" data-history-tab="launch">Launch scenario</button>
             </div>
             <div class="history-tab-panels">
               <section class="history-tab-panel is-active" data-history-panel="monthly">
@@ -289,7 +306,7 @@
                   <div>
                     <p class="eyebrow">Suggested units</p>
                     <h3>Starting forecast for the selected month</h3>
-                    <p class="panel-subcopy">This is the recommended monthly starting point per product. It is calculated from recent averages, last year's same month, and seasonality.</p>
+                    <p class="panel-subcopy">This is the recommended monthly starting point per product. It is calculated from recent averages, last year's same month, and seasonality. Not an order recommendation.</p>
                   </div>
                 </div>
                 <div class="table-wrap">
@@ -462,9 +479,12 @@
               <section class="history-tab-panel" data-history-panel="launch">
                 <div class="panel-header panel-header-inner">
                   <div>
-                    <p class="eyebrow">Launch Planning</p>
+                    <p class="eyebrow">Launch scenario</p>
                     <h3>New product send planning</h3>
                     <p class="panel-subcopy" id="launch-planning-copy">Review proxy launch curves and coverage assumptions for new products.</p>
+                    <div class="panel-subcopy-links">
+                      <button type="button" class="planner-compare-link" id="open-launch-module">Open Launch Planning module</button>
+                    </div>
                   </div>
                 </div>
                 <section class="history-card">
@@ -951,6 +971,6 @@
     </dialog>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-    <script src="/planner-app.js?v=20260425n"></script>
+    <script src="/planner-app.js?v=20260425r"></script>
   </body>
 </html>

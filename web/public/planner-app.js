@@ -127,6 +127,7 @@ const saveSkuMappingButton = document.getElementById("btn-save-sku-mapping");
 const plannerDataSourceSelect = document.getElementById("planner-data-source-select");
 const plannerDataSourceCopy = document.getElementById("planner-data-source-copy");
 const applyDataSourceButton = document.getElementById("btn-apply-data-source");
+const resultsTabButtons = Array.from(document.querySelectorAll("[data-results-tab]"));
 
 let inventoryUploaded = false;
 let forecastSettings = {};
@@ -150,11 +151,14 @@ let kpisRequested = false;
 let activeHelpTrigger = null;
 let activeLaunchEditId = "";
 let plannerDataSourceMode = "local";
+let activeResultsTab = "reorder";
 let activeHistoricalTrendProduct = "__all__";
 let activeHistoricalTrendCompareEnabled = false;
 let activeHistoricalTrendProductB = "";
 let activeHistoricalTrendProductC = "";
 const plannerVariant = new URLSearchParams(window.location.search).get("plannerVariant") || "current";
+const appLoadingOverlay = document.getElementById("app-loading-overlay");
+const appLoadingMessage = document.getElementById("app-loading-message");
 const floatingHelpTooltip = document.createElement("div");
 floatingHelpTooltip.className = "app-tooltip";
 floatingHelpTooltip.hidden = true;
@@ -171,6 +175,7 @@ const CORE_PRODUCTS = [
   "Variety Pack",
 ];
 const FORECAST_STORAGE_KEY = "demand-planning-rail-collapsed";
+const RESULTS_TAB_STORAGE_KEY = "demand-planning-results-tab";
 
 function updateRailToggleLabel(collapsed) {
   if (!railToggle) return;
@@ -225,11 +230,9 @@ function clampNumber(value, fallback = null) {
 function formatSupplyLeftLabel(row) {
   const days = clampNumber(row?.days_of_supply, null);
   const weeks = clampNumber(row?.weeks_of_supply, null);
-  const recentWeeks = clampNumber(row?.weeks_of_supply_recent, null);
   if (days === null && weeks === null) return "-";
   const daysRounded = days === null ? null : Math.max(0, Math.round(days));
   const weeksRounded = weeks === null ? null : Math.max(0, Number(weeks));
-  const recentWeeksRounded = recentWeeks === null ? null : Math.max(0, Number(recentWeeks));
 
   // Prefer days for near-term decisions; prefer weeks for longer horizons.
   const preferDays = daysRounded !== null && daysRounded < 28;
@@ -238,16 +241,9 @@ function formatSupplyLeftLabel(row) {
     : weeksRounded === null
       ? `${integer(daysRounded)} days`
       : `${number(weeksRounded)} wks`;
-  const baseSecondary = preferDays
+  const secondary = preferDays
     ? (weeksRounded === null ? "" : `(${number(weeksRounded)} wks)`)
     : (daysRounded === null ? "" : `(~${integer(daysRounded)} days)`);
-
-  // Most confusion comes from month-plan mix changing the demand rate.
-  // Show the baseline (recent) weeks as a sanity-check.
-  const recentNote = recentWeeksRounded === null ? "" : `recent: ${number(recentWeeksRounded)}w`;
-  const secondary = baseSecondary
-    ? (recentNote ? `${baseSecondary} | ${recentNote}` : baseSecondary)
-    : recentNote;
 
   return { primary, secondary };
 }
@@ -437,28 +433,33 @@ async function persistMarketingConfig(nextConfig, successMessage) {
     setStatus("Settings are locked.", true);
     return;
   }
-  marketingConfig = normalizeMarketingConfig(nextConfig);
-  writeLocalMarketingConfig(marketingConfig);
-  marketingConfigSource = "local";
+  beginScreenBusy("Saving...");
   try {
-    const response = await fetch("/api/marketing-config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ marketingConfig }),
-    });
-    if (response.ok) {
-      const payload = await readJsonResponse(response);
-      marketingConfig = normalizeMarketingConfig(payload.marketingConfig || payload);
-      marketingConfigSource = "api";
-      writeLocalMarketingConfig(marketingConfig);
+    marketingConfig = normalizeMarketingConfig(nextConfig);
+    writeLocalMarketingConfig(marketingConfig);
+    marketingConfigSource = "local";
+    try {
+      const response = await fetch("/api/marketing-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ marketingConfig }),
+      });
+      if (response.ok) {
+        const payload = await readJsonResponse(response);
+        marketingConfig = normalizeMarketingConfig(payload.marketingConfig || payload);
+        marketingConfigSource = "api";
+        writeLocalMarketingConfig(marketingConfig);
+      }
+    } catch {
+      // keep local
     }
-  } catch {
-    // keep local
-  }
-  renderMarketingConfig();
-  if (successMessage) {
-    const suffix = marketingConfigSource === "api" ? "" : " Saved locally (API stub not active yet).";
-    setStatus(`${successMessage}${suffix}`);
+    renderMarketingConfig();
+    if (successMessage) {
+      const suffix = marketingConfigSource === "api" ? "" : " Saved locally (API stub not active yet).";
+      setStatus(`${successMessage}${suffix}`);
+    }
+  } finally {
+    endScreenBusy();
   }
 }
 
@@ -1058,10 +1059,13 @@ function chunkRowsByDate(rows, maxRows = 1500) {
 
 const HEADER_HELP = {
   "Status": "Planner status summary. Spoilage Risk is currently estimated as: projected_supply_days = (on_hand + in_transit + recommended_order_units) / forecast_daily_demand. The row is marked Spoilage Risk when projected_supply_days is greater than shelf_life_months * 30. This is not batch-aware, so it does not distinguish older warehouse stock from newer fresh inventory.",
-  "Daily velocity": "Average units sold per day from the selected baseline dates.",
+  "Baseline velocity": "Average units/day from the selected baseline window. Computed as units_used_for_velocity / days_used_for_velocity. Viral smoothing and intermittent sales can change days used.",
+  "Plan velocity": "Units/day used for the planning period (month plan uplift + mix, plus any campaign lifts). This is the run-rate used for cover, stockout dates, and reorder math.",
   "Order units": "Actual units sold in the selected baseline date range.",
   "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on, the planner can remove the highest-selling days from the baseline window before calculating demand velocity (tune the thresholds in Settings).",
   "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
+  "Units used": "Units used in the baseline velocity calculation (sales only, or sales + samples depending on the demand mode).",
+  "Days used": "Days used in the baseline velocity calculation. This can be less than the full baseline window when sales are intermittent or smoothing removes spike days.",
   "Gross sales": "Gross product sales in the selected baseline dates (SUM of SKU Subtotal Before Discount). This includes cancelled orders (GMV-style); demand units remain net of returns.",
   "Net gross (est.)": "Planner-style net product sales estimate (TikTok finance shape). Cancelled orders are set to $0. We subtract seller-funded discount from SKU Subtotal Before Discount, then prorate for returned units. Platform discount is not subtracted.",
   "On hand": "Units physically available right now from the latest inventory snapshot.",
@@ -1070,13 +1074,16 @@ const HEADER_HELP = {
   "Transit ETA": "Expected arrival date for the inbound units we are counting.",
   "Lead time used": "Lead time used in the math for this row. The planner uses historical transit lead time when it can infer one, otherwise it falls back to the shared default lead time.",
   "Transit gap": "Estimated number of days where on-hand inventory runs out before the current inbound ETA arrives.",
-  "Usable supply": "Supply we can count for planning right now: on hand plus inbound expected in time.",
-  "Supply left": "How long the usable supply should last using the forecast daily demand (month plan uplift + mix, plus any campaign lifts). The cell also shows the recent (history-based) weeks so you can sanity-check big mix changes.",
+  "Current supply": "Current supply used by the planner: on hand + in transit. This is not time-phased by ETA; Transit gap is the signal that inbound arrives too late.",
+  "On-hand cover (recent)": "How long on-hand inventory lasts at the baseline (history) velocity. This is the easiest sanity-check for what you have right now.",
+  "Total cover (plan)": "How long current supply (on hand + in transit) lasts at the plan velocity. This is what the planner uses for stockout + reorder math.",
   "Safety stock": "Extra units kept as protection before the next order should arrive.",
-  "Projected stockout date": "Projected stockout date if demand keeps moving at the current rate (also shows a day countdown).",
+  "Projected stockout date": "Projected date you run out if demand follows the plan velocity. Shows total-supply stockout, plus on-hand-only stockout (OH) when it differs.",
   "Order-by date": "Latest date to place the order so lead time and safety stock are covered (also shows a day countdown).",
   "Order today": "Recommended units to order today after supply, lead time, and safety stock are applied.",
   "Capital needed": "Estimated cash needed for the recommended order: recommended_order_units * unit_cogs.",
+  "Reorder": "Action view: shows what to order and by when.",
+  "Status": "Status view: shows coverage, stockout timing, and what is driving the recommendation.",
   "Units in baseline window": "Actual units sold during the selected baseline date range.",
   "Baseline unit share %": "This product's share of all baseline units sold.",
   "Baseline sales share %": "This product's share of all baseline gross sales.",
@@ -1176,6 +1183,30 @@ function setButtonBusy(button, busy, label) {
       delete node.dataset.originalLabel;
     }
   }
+}
+
+let screenBusyDepth = 0;
+
+function beginScreenBusy(message) {
+  screenBusyDepth += 1;
+  if (appLoadingMessage) {
+    appLoadingMessage.textContent = String(message || "Working...");
+  }
+  if (appLoadingOverlay) {
+    appLoadingOverlay.hidden = false;
+  }
+  document.body.classList.add("is-screen-busy");
+  document.body.setAttribute("aria-busy", "true");
+}
+
+function endScreenBusy() {
+  screenBusyDepth = Math.max(0, screenBusyDepth - 1);
+  if (screenBusyDepth > 0) return;
+  if (appLoadingOverlay) {
+    appLoadingOverlay.hidden = true;
+  }
+  document.body.classList.remove("is-screen-busy");
+  document.body.setAttribute("aria-busy", "false");
 }
 
 function setActivePage(page) {
@@ -2092,23 +2123,37 @@ function renderForecastSummary() {
   const monthKey = getSelectedPlanningMonthKey();
   const actualStats = getMonthlyActuals(monthKey);
   const actualMix = getMonthlyActualMix(monthKey);
-  const setting = isEditableForecastMonth(monthKey)
+  const editable = isEditableForecastMonth(monthKey);
+  const setting = editable
     ? getForecastSetting(monthKey, { persist: false })
     : {
         upliftPct: Number(actualStats?.changePctVsPreviousMonth ?? 0),
         productMix: actualMix || baselineMixLookup(),
       };
   document.getElementById("uplift-pct").value = String(setting.upliftPct ?? 35);
-  forecastSummaryTitle.textContent = isEditableForecastMonth(monthKey) ? `${monthLabelFromKey(monthKey)} plan` : `${monthLabelFromKey(monthKey)} actuals`;
-  forecastSummaryCopy.textContent = isEditableForecastMonth(monthKey)
+  forecastSummaryTitle.textContent = editable ? `${monthLabelFromKey(monthKey)} plan` : `${monthLabelFromKey(monthKey)} actuals`;
+  forecastSummaryCopy.textContent = editable
     ? hasProductLiftOverrides(setting)
       ? `Planned change vs prior month: ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%, calculated from product lifts.`
       : `Planned change vs prior month: ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%.`
     : `Actual change vs previous month: ${actualStats?.changePctVsPreviousMonth === null || actualStats?.changePctVsPreviousMonth === undefined ? "n/a" : `${actualStats.changePctVsPreviousMonth >= 0 ? "+" : ""}${number(actualStats.changePctVsPreviousMonth)}%`}.`;
+
+  const changeTitle = editable ? "Planned change" : "Actual change";
+  const changePctRaw = editable ? setting.upliftPct : actualStats?.changePctVsPreviousMonth;
+  const changeValue = changePctRaw === null || changePctRaw === undefined
+    ? "n/a"
+    : `${Number(changePctRaw) >= 0 ? "+" : ""}${number(changePctRaw)}%`;
+  const primaryPill = `
+    <span class="forecast-summary-pill forecast-summary-pill-primary">
+      <span class="forecast-summary-pill-title">${escapeHtml(changeTitle)}</span>
+      <span class="forecast-summary-pill-value">${escapeHtml(changeValue)}</span>
+    </span>
+  `.trim();
+
   if (!setting.productMix) {
     forecastSummaryList.innerHTML = `
-      <span class="forecast-summary-pill">${isEditableForecastMonth(monthKey) ? `Plan ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%` : "Actual month loaded"}</span>
-      <span class="forecast-summary-pill forecast-summary-pill-muted">${isEditableForecastMonth(monthKey) ? "Using selected baseline mix" : "Using actual month mix"}</span>
+      ${primaryPill}
+      <span class="forecast-summary-pill forecast-summary-pill-muted">${editable ? "Using selected baseline mix" : "Using actual month mix"}</span>
     `;
     return;
   }
@@ -2116,8 +2161,8 @@ function renderForecastSummary() {
     .filter(([, value]) => Number(value) > 0)
     .sort((a, b) => b[1] - a[1]);
   forecastSummaryList.innerHTML = [
-    `<span class="forecast-summary-pill">${isEditableForecastMonth(monthKey) ? `Plan ${setting.upliftPct >= 0 ? "+" : ""}${number(setting.upliftPct)}%` : "Actual month mix"}</span>`,
-    ...(isEditableForecastMonth(monthKey) && hasProductLiftOverrides(setting) ? ['<span class="forecast-summary-pill forecast-summary-pill-muted">Calculated from product lifts</span>'] : []),
+    primaryPill,
+    ...(editable && hasProductLiftOverrides(setting) ? ['<span class="forecast-summary-pill forecast-summary-pill-muted">Calculated from product lifts</span>'] : []),
     ...sortedMix.map(([product, value]) => `<span class="forecast-summary-pill">${escapeHtml(displayProductName(product).replace(" Bomb 2P", "").replace(" Bomb", ""))} ${number(value)}%</span>`),
   ].join("");
 }
@@ -2180,6 +2225,23 @@ function loadForecastDialogMonth(monthKey) {
     syncForecastInputsFromProductLifts({ baselineUnits, readOnly: false });
   } else if (forecastLiftGuidance) {
     forecastLiftGuidance.textContent = "This month already has actuals, so the planner is showing the real mix and lift instead of editable inputs.";
+  }
+}
+
+function setActiveResultsTab(tab) {
+  activeResultsTab = tab === "status" ? "status" : "reorder";
+  try {
+    window.localStorage.setItem(RESULTS_TAB_STORAGE_KEY, activeResultsTab);
+  } catch {
+    // ignore
+  }
+  resultsTabButtons.forEach((button) => {
+    const selected = button.dataset.resultsTab === activeResultsTab;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+  if (latestPlanPayload) {
+    renderResults(latestPlanPayload);
   }
 }
 
@@ -2283,7 +2345,10 @@ function buildProductTrendRows(payload, productName) {
 }
 
 function updateHistoricalTrendCompareVisibility() {
-  const enabled = Boolean(activeHistoricalTrendCompareEnabled);
+  const enabled = historicalDemandTrendCompareToggle instanceof HTMLInputElement
+    ? Boolean(historicalDemandTrendCompareToggle.checked)
+    : Boolean(activeHistoricalTrendCompareEnabled);
+  activeHistoricalTrendCompareEnabled = enabled;
   if (historicalDemandTrendComparePanel) historicalDemandTrendComparePanel.hidden = !enabled;
   if (!enabled) {
     activeHistoricalTrendProductB = "";
@@ -2392,56 +2457,70 @@ function renderResults(payload) {
   const rows = sortRowsByProductName(payload.rows || []);
   const summary = payload.summary || {};
   const salesOnly = document.getElementById("velocity-mode").value === "sales_only";
-  const columns = salesOnly
+  const columns = (() => {
+    if (activeResultsTab === "status") {
+      return salesOnly
+        ? [
+          ["Product", "product_name"],
+          ["Status", "status"],
+          ["Baseline velocity", "avg_daily_demand"],
+          ["Plan velocity", "forecast_daily_demand"],
+          ["On hand", "on_hand"],
+          ["In transit", "in_transit"],
+          ["Transit ETA", "transit_eta"],
+          ["Transit gap", "transit_gap_days"],
+          ["On-hand cover (recent)", "weeks_on_hand_recent"],
+          ["Total cover (plan)", "weeks_of_supply"],
+          ["Projected stockout date", "projected_stockout_date"],
+          ["Order-by date", "reorder_date"],
+        ]
+        : [
+          ["Product", "product_name"],
+          ["Status", "status"],
+          ["Baseline velocity", "avg_daily_demand"],
+          ["Plan velocity", "forecast_daily_demand"],
+          ["Units used", "units_used_for_velocity"],
+          ["Days used", "days_used_for_velocity"],
+          ["On hand", "on_hand"],
+          ["In transit", "in_transit"],
+          ["Transit ETA", "transit_eta"],
+          ["Transit gap", "transit_gap_days"],
+          ["On-hand cover (recent)", "weeks_on_hand_recent"],
+          ["Total cover (plan)", "weeks_of_supply"],
+          ["Projected stockout date", "projected_stockout_date"],
+          ["Order-by date", "reorder_date"],
+        ];
+    }
+
+    // Reorder view (action-oriented)
+    return salesOnly
       ? [
         ["Product", "product_name"],
         ["Status", "status"],
-        ["Daily velocity", "avg_daily_demand"],
-        ["Order units", "sales_units_in_baseline"],
-        ["Smoothed units", "smoothed_units_in_baseline"],
-          ["Baseline unit mix %", "mix_pct"],
-        ["Gross sales", "gross_sales_in_baseline"],
-        ["Net gross (est.)", "net_gross_sales_in_baseline"],
-        ["On hand", "on_hand"],
-        ["In transit", "in_transit"],
-        ["Transit start", "transit_started_on"],
-        ["Transit ETA", "transit_eta"],
-        ["Lead time used", "used_lead_time_days"],
-        ["Transit gap", "transit_gap_days"],
-        ["Usable supply", "current_supply_units"],
-        ["Supply left", "weeks_of_supply"],
-        ["Safety stock", "safety_stock_units"],
-        ["Projected stockout date", "projected_stockout_date"],
-        ["Order-by date", "reorder_date"],
         ["Order today", "recommended_order_units"],
         ["Capital needed", "capital_required"],
+        ["Order-by date", "reorder_date"],
+        ["Projected stockout date", "projected_stockout_date"],
+        ["On hand", "on_hand"],
+        ["In transit", "in_transit"],
+        ["Transit ETA", "transit_eta"],
+        ["Total cover (plan)", "weeks_of_supply"],
       ]
-    : [
+      : [
         ["Product", "product_name"],
         ["Status", "status"],
-        ["Daily velocity", "avg_daily_demand"],
-        ["Order units", "sales_units_in_baseline"],
-        ["Smoothed units", "smoothed_units_in_baseline"],
-          ["Baseline unit mix %", "mix_pct"],
-        ["Samples", "sample_units_in_baseline"],
-        ["Units used", "units_used_for_velocity"],
-        ["Days used", "days_used_for_velocity"],
-        ["Gross sales", "gross_sales_in_baseline"],
-        ["Net gross (est.)", "net_gross_sales_in_baseline"],
-        ["On hand", "on_hand"],
-        ["In transit", "in_transit"],
-        ["Transit start", "transit_started_on"],
-        ["Transit ETA", "transit_eta"],
-        ["Lead time used", "used_lead_time_days"],
-        ["Transit gap", "transit_gap_days"],
-        ["Usable supply", "current_supply_units"],
-        ["Supply left", "weeks_of_supply"],
-        ["Safety stock", "safety_stock_units"],
-        ["Projected stockout date", "projected_stockout_date"],
-        ["Order-by date", "reorder_date"],
         ["Order today", "recommended_order_units"],
         ["Capital needed", "capital_required"],
+        ["Order-by date", "reorder_date"],
+        ["Projected stockout date", "projected_stockout_date"],
+        ["Units used", "units_used_for_velocity"],
+        ["Days used", "days_used_for_velocity"],
+        ["On hand", "on_hand"],
+        ["In transit", "in_transit"],
+        ["Transit ETA", "transit_eta"],
+        ["Total cover (plan)", "weeks_of_supply"],
       ];
+  })();
   resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
   resultSummary.innerHTML = [
     `<span class="summary-pill summary-pill-critical">Critical ${summary.critical_on_hand || 0}</span>`,
@@ -2483,6 +2562,17 @@ function renderResults(payload) {
     if (key === "status") return `<span class="status status-${String(row.status || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}">${row.status || ""}</span>`;
     if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required") return money(row[key]);
     if (key === "mix_pct") return percent(row[key]);
+    if (key === "recommended_order_units") return integer(row[key]);
+    if (key === "weeks_on_hand_recent") {
+      const label = formatSupplyLeftLabel({ days_of_supply: row.days_on_hand_recent, weeks_of_supply: row.weeks_on_hand_recent });
+      if (typeof label === "string") return escapeHtml(label);
+      return `
+        <span class="cell-split">
+          <span class="cell-split-main">${escapeHtml(label.primary)}</span>
+          <span class="cell-split-meta">${escapeHtml(label.secondary)}</span>
+        </span>
+      `.trim();
+    }
     if (key === "weeks_of_supply") {
       const label = formatSupplyLeftLabel(row);
       if (typeof label === "string") return escapeHtml(label);
@@ -2493,14 +2583,43 @@ function renderResults(payload) {
         </span>
       `.trim();
     }
+    if (key === "forecast_daily_demand") {
+      const planVelocity = clampNumber(row.forecast_daily_demand, null);
+      if (planVelocity === null) return number(row[key]);
+      const baselineVelocity = clampNumber(row.avg_daily_demand, null);
+      let deltaLabel = "";
+      if (baselineVelocity !== null && baselineVelocity > 0) {
+        const delta = (planVelocity - baselineVelocity) / baselineVelocity;
+        deltaLabel = `${delta >= 0 ? "+" : ""}${percent(delta)} vs baseline`;
+      } else if (baselineVelocity === 0) {
+        deltaLabel = "n/a vs baseline";
+      }
+      if (!deltaLabel) return escapeHtml(number(planVelocity));
+      return `
+        <span class="cell-split cell-split-stacked">
+          <span class="cell-split-main">${escapeHtml(number(planVelocity))}</span>
+          <span class="cell-split-meta">${escapeHtml(deltaLabel)}</span>
+        </span>
+      `.trim();
+    }
     if (key === "projected_stockout_date") {
       const date = humanDate(row[key] || "");
       const countdown = formatCountdownLabel(row.days_of_supply);
+      const onHandDate = humanDate(row.on_hand_stockout_date || "");
+      const showOnHand = Boolean(onHandDate && onHandDate !== date);
+      const countdownLabel = countdown ? (countdown === "today" ? "today" : `in ${countdown}`) : "";
+      const meta = [
+        countdownLabel,
+        showOnHand ? `On-hand only: ${onHandDate}` : "",
+      ].filter(Boolean).join(" | ");
       if (!date) return "-";
+      const title = showOnHand
+        ? "Projected stockout includes in-transit supply. 'On-hand only' ignores in-transit."
+        : "Projected stockout uses plan velocity and includes in-transit supply.";
       return `
-        <span class="cell-split">
+        <span class="cell-split cell-split-stacked" title="${escapeHtml(title)}">
           <span class="cell-split-main">${escapeHtml(date)}</span>
-          <span class="cell-split-meta">${escapeHtml(countdown ? `(${countdown})` : "")}</span>
+          ${meta ? `<span class="cell-split-meta">${escapeHtml(meta)}</span>` : ""}
         </span>
       `.trim();
     }
@@ -4236,6 +4355,7 @@ function renderKpis(payload) {
 }
 
 async function runPlanningFromForm(showStatus = true) {
+  beginScreenBusy("Running planning...");
   setButtonBusy(runPlanningBtn, true, "Running...");
   try {
     const formData = new FormData(planForm);
@@ -4266,6 +4386,7 @@ async function runPlanningFromForm(showStatus = true) {
     if (showStatus) setStatus("Planning run complete.");
   } finally {
     setButtonBusy(runPlanningBtn, false);
+    endScreenBusy();
   }
 }
 
@@ -4291,23 +4412,91 @@ async function loadKpis() {
   renderKpis(payload);
 }
 
-function previewNonJsonResponse(raw) {
+function previewNonJsonResponse(raw, meta = {}) {
   const trimmed = String(raw || "").trim();
-  const excerpt = trimmed.replace(/\s+/g, " ").slice(0, 180);
+  const excerpt = trimmed.replace(/\s+/g, " ").slice(0, 220);
+  const status = Number(meta.status || 0);
+  const url = String(meta.url || "");
+  const contentType = String(meta.contentType || "").toLowerCase();
+
   if (!excerpt) return "Empty response body.";
-  if (excerpt.toLowerCase().startsWith("<!doctype") || excerpt.toLowerCase().startsWith("<html")) {
-    return "Server returned HTML instead of JSON. This usually means the API route crashed or the dev server is serving an error page.";
+
+  // Next dev server / bundler got corrupted (common after interrupted builds).
+  if (
+    trimmed.includes("Cannot find module './chunks/vendor-chunks/next.js'") ||
+    trimmed.includes("Cannot find module \".next/") ||
+    trimmed.includes("ChunkLoadError") ||
+    trimmed.includes("Failed to fetch dynamically imported module")
+  ) {
+    return "The server restarted into a bad state (missing a Next.js file). Restart the server, then refresh the page.";
   }
+
+  const looksLikeHtml = excerpt.toLowerCase().startsWith("<!doctype") || excerpt.toLowerCase().startsWith("<html");
+  if (looksLikeHtml) {
+    if (status === 404) {
+      return "API route not found (404). This usually means you opened the planner from a different server/port than the Next backend, or the site is hosted as static files without API routes.";
+    }
+    if (status === 405) {
+      return "API route exists but the HTTP method is not allowed (405). This can happen if a POST endpoint is being called with GET, or the route handler did not export the expected method.";
+    }
+    if (status === 413) {
+      return "Upload payload too large (413). Try again; if it keeps happening, reduce the upload chunk size.";
+    }
+    if (status >= 500 && status <= 599) {
+      return "The server returned an HTML error page. This usually means the server restarted or an API route hit an error. Try again in a few seconds.";
+    }
+    // 200/302 HTML typically indicates a rewrite/redirect to an app shell or login page.
+    return "The server returned a web page instead of data. This can happen after a server restart, or if the request was redirected to a page route.";
+  }
+
+  if (contentType && !contentType.includes("application/json")) {
+    return `Server returned non-JSON response (${contentType}). ${excerpt}`;
+  }
+
+  // Helpful when running the static planner from a different server origin.
+  if (url && url.includes("/api/") && (trimmed.includes("<") || trimmed.toLowerCase().includes("not found"))) {
+    return `API call did not return JSON. Make sure the planner and the API are being served from the same host/port. ${excerpt}`;
+  }
+
   return `Server returned non-JSON response: ${excerpt}`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableFetchError(error) {
+  const message = String(error && error.message ? error.message : error || "");
+  return (
+    message.includes("HTTP 502") ||
+    message.includes("HTTP 503") ||
+    message.includes("HTTP 504") ||
+    message.includes("Failed to fetch") ||
+    message.includes("NetworkError") ||
+    message.includes("Load failed") ||
+    message.includes("Server returned HTML instead of JSON") ||
+    message.includes("returned a web page instead of data") ||
+    message.includes("returned an HTML error page")
+  );
+}
+
 async function readJsonResponse(response, url) {
+  const contentType = String(response.headers.get("content-type") || "");
   const raw = await response.text();
+  const trimmed = String(raw || "").trim();
+  const likelyJson =
+    contentType.toLowerCase().includes("application/json") ||
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[");
+
+  if (!likelyJson) {
+    throw new Error(`${previewNonJsonResponse(raw, { status: response.status, url, contentType })} (HTTP ${response.status})`);
+  }
+
   try {
     return raw ? JSON.parse(raw) : {};
   } catch {
-    const where = url ? ` for ${url}` : "";
-    throw new Error(`${previewNonJsonResponse(raw)}${where} (HTTP ${response.status})`);
+    throw new Error(`${previewNonJsonResponse(raw, { status: response.status, url, contentType })} (HTTP ${response.status})`);
   }
 }
 
@@ -4316,21 +4505,33 @@ async function fetchJson(url, options) {
   if (requestUrl.origin === window.location.origin && requestUrl.pathname.startsWith("/api/")) {
     requestUrl.searchParams.set("dataSource", plannerDataSourceMode || "local");
   }
-  const response = await fetch(requestUrl.toString(), options);
-  const payload = await readJsonResponse(response, requestUrl.toString());
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
+
+  const method = String((options && options.method) || "GET").toUpperCase();
+  const maxAttempts = method === "GET" ? 3 : 1;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(requestUrl.toString(), options);
+      const payload = await readJsonResponse(response, requestUrl.toString());
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || `Request failed (${response.status})`);
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts - 1 || !isRetryableFetchError(error)) {
+        throw error;
+      }
+      // Small backoff to allow dev server to finish compiling or recover from transient gateway errors.
+      await sleep(250 * (attempt + 1));
+    }
   }
-  return payload;
+
+  throw lastError || new Error("Request failed.");
 }
 
 function getStoredPlannerDataSource() {
-  try {
-    const stored = window.localStorage.getItem(PLANNER_DATA_SOURCE_STORAGE_KEY);
-    if (stored === "live" || stored === "local") return stored;
-  } catch {
-    // ignore storage failures
-  }
   const host = String(window.location.hostname || "").toLowerCase();
   const isLoopbackIpv4 = (value) => {
     if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return false;
@@ -4339,7 +4540,18 @@ function getStoredPlannerDataSource() {
     return parts[0] === 127;
   };
   const isLocalHost = host === "localhost" || host === "::1" || isLoopbackIpv4(host);
-  return isLocalHost ? "local" : "live";
+  if (!isLocalHost) {
+    // Hosted URL: default to Firestore even if an old localStorage value exists.
+    // (Local-files mode is primarily a dev workflow.)
+    return "live";
+  }
+  try {
+    const stored = window.localStorage.getItem(PLANNER_DATA_SOURCE_STORAGE_KEY);
+    if (stored === "live" || stored === "local") return stored;
+  } catch {
+    // ignore storage failures
+  }
+  return "local";
 }
 
 function updatePlannerDataSourceCopy(workspace = null) {
@@ -4463,6 +4675,7 @@ settingsAuthDialog?.addEventListener("close", () => {
 
 settingsAuthForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  beginScreenBusy("Unlocking settings...");
   try {
     setButtonBusy(settingsAuthSubmit, true, "Unlocking...");
     setSettingsAuthStatus("");
@@ -4478,6 +4691,7 @@ settingsAuthForm?.addEventListener("submit", async (event) => {
     setSettingsAuthStatus(error.message || "Could not unlock settings.", true);
   } finally {
     setButtonBusy(settingsAuthSubmit, false);
+    endScreenBusy();
   }
 });
 
@@ -4489,6 +4703,7 @@ settingsPasswordForm?.addEventListener("submit", async (event) => {
       setSettingsPasswordStatus("Settings are locked.", true);
       return;
     }
+    beginScreenBusy("Updating settings password...");
     setSettingsPasswordStatus("");
     setButtonBusy(changePasswordButton, true, "Updating...");
 
@@ -4524,6 +4739,7 @@ settingsPasswordForm?.addEventListener("submit", async (event) => {
     setSettingsPasswordStatus(error.message || "Could not update password.", true);
   } finally {
     setButtonBusy(changePasswordButton, false);
+    endScreenBusy();
   }
 });
 
@@ -4537,9 +4753,16 @@ async function loadWorkspace() {
   updatePlannerDataSourceCopy(workspace);
   await loadMarketingConfig();
   await loadSkuMapping();
+  // Clear stale "server returned HTML" errors once the backend is healthy again.
+  if (uploadStatus?.dataset?.error === "true") {
+    const message = String(uploadStatus.textContent || "");
+    if (message.includes("Server returned HTML instead of JSON") || message.includes("Server returned non-JSON") || message.includes("Dev server got into a bad state")) {
+      setStatus("");
+    }
+  }
   const summary = workspace.summary || {};
   if (summary.date_end) {
-    const endDate = new Date(summary.date_end);
+    const endDate = new Date(`${summary.date_end}T00:00:00Z`);
     const startDate = new Date(endDate);
     startDate.setDate(startDate.getDate() - 29);
     kpiStartDateInput.value = startDate.toISOString().slice(0, 10);
@@ -4566,10 +4789,13 @@ applyDataSourceButton?.addEventListener("click", async () => {
   setStoredPlannerDataSource(nextMode);
   setStatus(`Switched preview to ${plannerDataSourceMode === "live" ? "Firestore" : "local files"}. Refreshing...`);
   try {
+    beginScreenBusy("Refreshing data source...");
     await loadWorkspace();
     setStatus(`Preview now using ${plannerDataSourceMode === "live" ? "Firestore" : "local files"}.`);
   } catch (error) {
     setStatus(error.message || "Could not switch preview data source.", true);
+  } finally {
+    endScreenBusy();
   }
 });
 
@@ -4587,6 +4813,7 @@ async function postForm(url, form) {
 
 loadSampleBtn.addEventListener("click", async () => {
   try {
+    beginScreenBusy("Refreshing current data...");
     setButtonBusy(loadSampleBtn, true, "Refreshing...");
     setStatus("Refreshing current data...");
     const payload = await fetchJson("/api/bootstrap?refresh=1");
@@ -4605,6 +4832,7 @@ loadSampleBtn.addEventListener("click", async () => {
     setStatus(error.message || "Could not refresh current data.", true);
   } finally {
     setButtonBusy(loadSampleBtn, false);
+    endScreenBusy();
   }
 });
 
@@ -4620,6 +4848,7 @@ if (updateLiveInventoryBtn) {
         setStatus("Settings are locked.", true);
         return;
       }
+      beginScreenBusy("Updating live inventory...");
       setButtonBusy(updateLiveInventoryBtn, true, "Updating...");
       setStatus("Pulling the live inventory sheet and saving it to Firestore...");
       const payload = await fetchJson("/api/inventory-sync", { method: "POST" });
@@ -4640,6 +4869,7 @@ if (updateLiveInventoryBtn) {
       setStatus(error.message || "Could not update live inventory from the sheet.", true);
     } finally {
       setButtonBusy(updateLiveInventoryBtn, false);
+      endScreenBusy();
     }
   });
 }
@@ -4654,6 +4884,7 @@ if (uploadTypeInput instanceof HTMLSelectElement) {
 
 dataUploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  beginScreenBusy("Uploading files...");
   setButtonBusy(uploadBtn, true, "Uploading...");
   try {
     const formData = new FormData(dataUploadForm);
@@ -4717,6 +4948,7 @@ dataUploadForm.addEventListener("submit", async (event) => {
     setStatus(error.message || "Could not upload files.", true);
   } finally {
     setButtonBusy(uploadBtn, false);
+    endScreenBusy();
   }
 });
 
@@ -4966,6 +5198,12 @@ planningYearInput?.addEventListener("change", async () => {
   await runPlanningFromForm(false);
 });
 
+resultsTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveResultsTab(button.dataset.resultsTab || "reorder");
+  });
+});
+
 forecastProductMixInputs.addEventListener("input", () => {
   updateForecastMixTotal();
   syncForecastInputsFromProductLifts({ baselineUnits: baselineUnitsLookup(), readOnly: false });
@@ -5004,6 +5242,7 @@ forecastCopyMixApplyButton?.addEventListener("click", () => {
 });
 
 saveForecastSettingsButton.addEventListener("click", async () => {
+  beginScreenBusy("Saving month plan...");
   try {
     const total = Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]")).reduce((sum, input) => sum + Number(input.value || 0), 0);
     if (Math.abs(total - 100) > 0.2) {
@@ -5033,11 +5272,14 @@ saveForecastSettingsButton.addEventListener("click", async () => {
     setStatus("Month forecast saved.");
   } catch (error) {
     setStatus(error.message || "Could not save month settings.", true);
+  } finally {
+    endScreenBusy();
   }
 });
 
 saveSettingsButton?.addEventListener("click", async (event) => {
   event.preventDefault();
+  beginScreenBusy("Saving settings...");
   try {
     const unlocked = await ensureSettingsUnlocked();
     if (!unlocked) {
@@ -5059,6 +5301,43 @@ saveSettingsButton?.addEventListener("click", async (event) => {
     setStatus("Shared planner settings saved.");
   } catch (error) {
     setStatus(error.message || "Could not save planner settings.", true);
+  } finally {
+    endScreenBusy();
+  }
+});
+
+// Persist the "Viral outlier smoothing" toggle as the shared default when possible,
+// so it sticks across browsers (including incognito).
+const excludeSpikesToggle = document.getElementById("exclude-spikes");
+excludeSpikesToggle?.addEventListener("change", async () => {
+  if (!(excludeSpikesToggle instanceof HTMLInputElement)) return;
+  const enabled = Boolean(excludeSpikesToggle.checked);
+  const current = sharedPlannerSettings || defaultPlannerSettings();
+  sharedPlannerSettings = normalizePlannerSettings({
+    ...current,
+    global: {
+      ...(current.global || {}),
+      viralSmoothingEnabled: enabled,
+    },
+  });
+  renderPlannerSettings(sharedPlannerSettings);
+
+  try {
+    const auth = await getSettingsAuthStatus();
+    if (auth?.enabled && !auth?.authed) {
+      setStatus("Viral outlier smoothing updated for this run. To save it as the default, unlock Settings and save.", false);
+      return;
+    }
+    const payload = await fetchJson("/api/planner-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: sharedPlannerSettings }),
+    });
+    sharedPlannerSettings = normalizePlannerSettings(payload.plannerSettings || sharedPlannerSettings);
+    renderPlannerSettings(sharedPlannerSettings);
+    setStatus(`Saved default: Viral outlier smoothing is now ${sharedPlannerSettings.global.viralSmoothingEnabled ? "on" : "off"}.`);
+  } catch (error) {
+    setStatus(error.message || "Could not save that setting.", true);
   }
 });
 
@@ -5069,7 +5348,12 @@ addSkuMappingButton?.addEventListener("click", () => {
 });
 
 saveSkuMappingButton?.addEventListener("click", async () => {
-  await saveSkuMappingOverrides();
+  beginScreenBusy("Saving SKU mapping...");
+  try {
+    await saveSkuMappingOverrides();
+  } finally {
+    endScreenBusy();
+  }
 });
 
 skuMappingBody?.addEventListener("click", (event) => {
@@ -5188,6 +5472,20 @@ kpiDetailToggle?.addEventListener("toggle", () => {
 setupDatePickers();
 setActivePage("planning");
 setActiveHistoryTab("monthly");
+document.getElementById("open-launch-module")?.addEventListener("click", () => {
+  setActivePage("launch-planning");
+  try {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch {
+    window.scrollTo(0, 0);
+  }
+});
+try {
+  const stored = window.localStorage.getItem(RESULTS_TAB_STORAGE_KEY);
+  setActiveResultsTab(stored === "status" ? "status" : "reorder");
+} catch {
+  setActiveResultsTab("reorder");
+}
 if (window.localStorage.getItem(FORECAST_STORAGE_KEY) === "true") {
   document.body.classList.add("rail-collapsed");
   if (railToggle) {
@@ -5199,4 +5497,7 @@ if (window.localStorage.getItem(FORECAST_STORAGE_KEY) === "true") {
 }
 syncHostedKpiAvailability();
 setStoredPlannerDataSource(getStoredPlannerDataSource());
-loadWorkspace().catch((error) => setStatus(error.message || "Could not load workspace.", true));
+beginScreenBusy("Loading planner...");
+loadWorkspace()
+  .catch((error) => setStatus(error.message || "Could not load workspace.", true))
+  .finally(() => endScreenBusy());
