@@ -240,11 +240,30 @@
                 <div class="panel-tabs panel-tabs-results" role="tablist" aria-label="Results views">
                   <span class="panel-tabs-label" role="presentation" aria-hidden="true">View</span>
                   <button type="button" class="panel-tab is-active" data-results-tab="reorder" role="tab" aria-selected="true">Recommended order</button>
-                  <button type="button" class="panel-tab" data-results-tab="status" role="tab" aria-selected="false">Drivers</button>
+                  <button type="button" class="panel-tab" data-results-tab="status" role="tab" aria-selected="false">Planned drivers</button>
+                  <button type="button" class="panel-tab" data-results-tab="history-only" role="tab" aria-selected="false">History-only drivers</button>
                 </div>
                 <div class="result-summary" id="result-summary"></div>
               </div>
-              <p class="panel-subcopy panel-subcopy-callout">Use this as the buying recommendation for the selected month plan. If demand happens at this planned rate, these are the units to order now to stay covered through the next few weeks, with inbound, lead time, and safety stock included.</p>
+              <p class="panel-subcopy panel-subcopy-callout" id="results-callout-copy">Use this as the buying recommendation for the selected month plan. If demand happens at this planned rate, these are the units to order now to stay covered through the next few weeks, with inbound, lead time, and safety stock included.</p>
+            </div>
+            <div class="results-reading-guide" id="results-reading-guide" aria-label="How to read recommended order" hidden>
+              <span class="results-guide-pill">
+                <span class="results-guide-pill-title">Current position</span>
+                <span class="results-guide-pill-value">On hand + In transit</span>
+              </span>
+              <span class="results-guide-pill">
+                <span class="results-guide-pill-title">Trigger</span>
+                <span class="results-guide-pill-value">Planned order trigger</span>
+              </span>
+              <span class="results-guide-pill">
+                <span class="results-guide-pill-title">Action</span>
+                <span class="results-guide-pill-value">Order now + Capital</span>
+              </span>
+              <span class="results-guide-pill">
+                <span class="results-guide-pill-title">Timing</span>
+                <span class="results-guide-pill-value">Order-by + Stockout</span>
+              </span>
             </div>
             <div class="table-wrap">
               <table id="results-table" class="data-grid">

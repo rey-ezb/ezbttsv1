@@ -1,8 +1,10 @@
 const summaryBlock = document.getElementById("summary-block");
-const uploadStatus = document.getElementById("upload-status");
-const resultSummary = document.getElementById("result-summary");
-const resultsHead = document.getElementById("results-head");
-const resultsBody = document.getElementById("results-body");
+  const uploadStatus = document.getElementById("upload-status");
+  const resultSummary = document.getElementById("result-summary");
+  const resultsHead = document.getElementById("results-head");
+  const resultsBody = document.getElementById("results-body");
+  const resultsCalloutCopy = document.getElementById("results-callout-copy");
+  const resultsReadingGuide = document.getElementById("results-reading-guide");
 const monthlyPlanHead = document.getElementById("monthly-plan-head");
 const monthlyPlanBody = document.getElementById("monthly-plan-body");
 const productMixHead = document.getElementById("product-mix-head");
@@ -1064,6 +1066,7 @@ const HEADER_HELP = {
   "Order units": "Actual units sold in the selected baseline date range.",
   "Smoothed units": "Units used after viral outlier smoothing. When smoothing is on, the planner can remove the highest-selling days from the baseline window before calculating demand velocity (tune the thresholds in Settings).",
   "Baseline unit mix %": "This product's share of total baseline units sold across the core products.",
+  "Sample units": "Sample units sent in the selected baseline date range. This is shown separately in Drivers when demand mode is Sales + samples.",
   "Units used": "Units used in the baseline velocity calculation (sales only, or sales + samples depending on the demand mode).",
   "Days used": "Days used in the baseline velocity calculation. This can be less than the full baseline window when sales are intermittent or smoothing removes spike days.",
   "Gross sales": "Gross product sales in the selected baseline dates (SUM of SKU Subtotal Before Discount). This includes cancelled orders (GMV-style); demand units remain net of returns.",
@@ -1081,9 +1084,17 @@ const HEADER_HELP = {
   "Projected stockout date": "Projected date you run out if demand follows the planned rate. Shows total-supply stockout, plus on-hand-only stockout (OH) when it differs.",
   "Order-by date": "Latest date to place the next order so lead time and safety stock are covered if the selected month plan happens as expected.",
   "Order now": "Recommended units to order now if the selected month plan happens as expected, after supply, lead time, and safety stock are applied.",
+  "Planned order trigger": "This is the trigger line for the planned scenario, not the order quantity. Compare current supply against this number. If current supply is below this trigger, it is time to order under the lifted plan. 'Order now' is the quantity to buy.",
   "Capital needed": "Estimated cash needed for the recommended order: recommended_order_units * unit_cogs.",
   "Recommended order": "Action view: shows the suggested order quantity and timing under the selected planning scenario.",
   "Drivers": "Explanation view: shows coverage, stockout timing, and the main drivers behind the recommended unit count.",
+  "History-only drivers": "Baseline-only explanation view: ignores planning lifts and shows what the numbers look like using recent history only.",
+  "History-only cover": "How long current supply lasts if demand keeps running at the baseline history velocity only.",
+  "History-only stockout": "Projected stockout date if demand keeps running at the baseline history velocity only.",
+  "History-only order-by": "Latest date to place the next order if you are only using baseline history velocity.",
+  "History-only order trigger": "This is the trigger line, not the order quantity. Compare current supply against this number. If current supply is below this trigger, it is time to order. 'History-only order now' is the quantity to buy.",
+  "History-only order now": "Suggested order quantity using baseline history only, with MOQ and case-pack rounding still applied.",
+  "History-only capital": "Estimated cash needed for the history-only order quantity.",
   "Units in baseline window": "Actual units sold during the selected baseline date range.",
   "Baseline unit share %": "This product's share of all baseline units sold.",
   "Baseline sales share %": "This product's share of all baseline gross sales.",
@@ -2237,22 +2248,167 @@ function loadForecastDialogMonth(monthKey) {
   }
 }
 
-function setActiveResultsTab(tab) {
-  activeResultsTab = tab === "status" ? "status" : "reorder";
-  try {
-    window.localStorage.setItem(RESULTS_TAB_STORAGE_KEY, activeResultsTab);
-  } catch {
-    // ignore
-  }
+  function setActiveResultsTab(tab) {
+    activeResultsTab = tab === "status" || tab === "history-only" ? tab : "reorder";
+    try {
+      window.localStorage.setItem(RESULTS_TAB_STORAGE_KEY, activeResultsTab);
+    } catch {
+      // ignore
+    }
   resultsTabButtons.forEach((button) => {
     const selected = button.dataset.resultsTab === activeResultsTab;
     button.classList.toggle("is-active", selected);
     button.setAttribute("aria-selected", selected ? "true" : "false");
   });
-  if (latestPlanPayload) {
-    renderResults(latestPlanPayload);
+    updateResultsCalloutCopy();
+    if (latestPlanPayload) {
+      renderResults(latestPlanPayload);
+    }
   }
-}
+
+  function updateResultsCalloutCopy() {
+    if (!(resultsCalloutCopy instanceof HTMLElement)) return;
+    if (resultsReadingGuide instanceof HTMLElement) {
+      resultsReadingGuide.hidden = activeResultsTab !== "reorder";
+    }
+    if (activeResultsTab === "history-only") {
+      resultsCalloutCopy.textContent = "Use this to sanity-check the base case. It ignores planning lifts and shows what the reorder picture looks like if demand keeps running only on recent history, with the same inbound, lead time, safety stock, MOQ, and case-pack rules.";
+      return;
+    }
+    if (activeResultsTab === "status") {
+      resultsCalloutCopy.textContent = "Use this to explain the selected month plan recommendation. It shows coverage, stockout timing, and the main drivers behind the recommended order count under the planned scenario.";
+      return;
+    }
+    resultsCalloutCopy.textContent = "Use this as the buying recommendation for the selected month plan. If demand happens at this planned rate, these are the units to order now to stay covered through the next few weeks, with inbound, lead time, and safety stock included.";
+  }
+
+  function daysInclusiveBetween(startIso, endIso) {
+    const start = String(startIso || "").slice(0, 10);
+    const end = String(endIso || "").slice(0, 10);
+    if (!start || !end) return 0;
+    const startDate = new Date(`${start}T00:00:00`);
+    const endDate = new Date(`${end}T00:00:00`);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
+    return Math.max(1, Math.floor((endDate.getTime() - startDate.getTime()) / 86400000) + 1);
+  }
+
+  function daysBetweenIsoDates(startIso, endIso) {
+    const start = String(startIso || "").slice(0, 10);
+    const end = String(endIso || "").slice(0, 10);
+    if (!start || !end) return null;
+    const startDate = new Date(`${start}T00:00:00`);
+    const endDate = new Date(`${end}T00:00:00`);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
+    return Math.round((endDate.getTime() - startDate.getTime()) / 86400000);
+  }
+
+  function addDaysToIsoDate(value, days) {
+    const iso = String(value || "").slice(0, 10);
+    if (!iso) return "";
+    const date = new Date(`${iso}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return "";
+    date.setDate(date.getDate() + Math.round(Number(days || 0)));
+    return date.toISOString().slice(0, 10);
+  }
+
+  function roundHistoryOnlyOrderUnits(rawUnits, row) {
+    let roundedUnits = Math.max(0, Number(rawUnits || 0));
+    if (roundedUnits <= 0) return 0;
+    const moq = Math.max(0, Number(row?.moq || 0));
+    const casePack = Math.max(0, Number(row?.case_pack || 0));
+    if (moq > 0 && roundedUnits < moq) roundedUnits = moq;
+    if (casePack > 0) roundedUnits = Math.ceil(roundedUnits / casePack) * casePack;
+    return roundedUnits;
+  }
+
+  function buildHistoryOnlyDriverRow(row) {
+    const baselineVelocity = Math.max(0, Number(row?.avg_daily_demand || 0));
+    const currentSupply = Math.max(0, Number(row?.current_supply_units || 0));
+    const leadTimeDays = Math.max(0, Number(row?.used_lead_time_days || row?.lead_time_days || 0));
+    const safetyWeeks = Math.max(0, Number(row?.safety_stock_weeks || 0));
+    const horizonDays = Math.max(1, daysInclusiveBetween(row?.horizon_start, row?.horizon_end));
+    const historyOnlySafetyStockUnits = baselineVelocity * safetyWeeks * 7;
+    const historyOnlyLeadTimeDemandUnits = baselineVelocity * leadTimeDays;
+    const historyOnlyReorderPointUnits = historyOnlyLeadTimeDemandUnits + historyOnlySafetyStockUnits;
+    const historyOnlyTargetStockUnits = (baselineVelocity * horizonDays) + historyOnlySafetyStockUnits;
+    const historyOnlyRawOrderUnits = Math.max(0, historyOnlyTargetStockUnits - currentSupply);
+    const historyOnlyOrderUnits = roundHistoryOnlyOrderUnits(historyOnlyRawOrderUnits, row);
+    const historyOnlyCapital = historyOnlyOrderUnits * Math.max(0, Number(row?.unit_cogs || 0));
+    const historyOnlyDaysOfSupply = baselineVelocity > 0 ? currentSupply / baselineVelocity : null;
+    const historyOnlyWeeksOfSupply = baselineVelocity > 0 ? currentSupply / (baselineVelocity * 7) : null;
+    const historyOnlyStockoutDate = historyOnlyDaysOfSupply === null ? null : addDaysToIsoDate(row?.snapshot_date, Math.floor(historyOnlyDaysOfSupply));
+    const historyOnlyOrderByDate = historyOnlyStockoutDate ? addDaysToIsoDate(historyOnlyStockoutDate, -leadTimeDays) : null;
+    return {
+      ...row,
+      history_only_days_of_supply: historyOnlyDaysOfSupply,
+      history_only_weeks_of_supply: historyOnlyWeeksOfSupply,
+      history_only_stockout_date: historyOnlyStockoutDate,
+      history_only_order_by_date: historyOnlyOrderByDate,
+      history_only_safety_stock_units: historyOnlySafetyStockUnits,
+      history_only_reorder_point_units: historyOnlyReorderPointUnits,
+      history_only_order_units: historyOnlyOrderUnits,
+      history_only_capital_required: historyOnlyCapital,
+    };
+  }
+
+  function buildTriggerVisibility(row, mode = "planned") {
+    const currentSupply = Math.max(0, Number(row?.current_supply_units ?? ((Number(row?.on_hand || 0)) + Number(row?.in_transit || 0))));
+    const trigger = Math.max(0, Number(mode === "history-only" ? row?.history_only_reorder_point_units : row?.reorder_point_units || 0));
+    if (!(trigger > 0)) {
+      return {
+        tone: "none",
+        rowClass: "",
+        badgeHtml: "",
+      };
+    }
+
+    const varianceUnits = currentSupply - trigger;
+    const variancePct = trigger > 0 ? (varianceUnits / trigger) : null;
+    const referenceDate = String(row?.snapshot_date || "").slice(0, 10);
+    const orderByDate = String(mode === "history-only" ? row?.history_only_order_by_date : row?.reorder_date || "").slice(0, 10);
+    const daysUntilOrder = daysBetweenIsoDates(referenceDate, orderByDate);
+    const isBelow = varianceUnits < 0;
+    const isClose = daysUntilOrder !== null
+      ? daysUntilOrder > 0 && daysUntilOrder <= 7
+      : (!isBelow && variancePct !== null && variancePct <= 0.15);
+
+    let tone = "ok";
+    let label = "";
+    if (daysUntilOrder !== null) {
+      if (daysUntilOrder < 0) {
+        tone = "below";
+        label = `${integer(Math.abs(daysUntilOrder))}d overdue`;
+      } else if (daysUntilOrder === 0) {
+        tone = "below";
+        label = "Order now";
+      } else if (daysUntilOrder <= 7) {
+        tone = "close";
+        label = `Due in ${integer(daysUntilOrder)}d`;
+      } else {
+        tone = "ok";
+        label = `Order in ${integer(daysUntilOrder)}d`;
+      }
+    } else if (isBelow) {
+      tone = "below";
+      label = "Order now";
+    } else if (isClose) {
+      tone = "close";
+      label = "Due soon";
+    } else {
+      tone = "ok";
+      label = "Covered";
+    }
+
+    return {
+      tone,
+      rowClass: tone === "below" ? "results-row-risk-below" : tone === "close" ? "results-row-risk-close" : "",
+      badgeHtml: `
+        <span class="trigger-badge trigger-badge-${tone}">
+          <span class="trigger-badge-text">${escapeHtml(label)}</span>
+        </span>
+      `.trim(),
+    };
+  }
 
 function destroyHistoricalTrendChart() {
   if (activeHistoricalTrendChart) {
@@ -2461,95 +2617,142 @@ function applyDefaults(defaults) {
   renderForecastSummary();
 }
 
-function renderResults(payload) {
-  latestPlanPayload = payload;
-  const rows = sortRowsByProductName(payload.rows || []);
-  const summary = payload.summary || {};
-  const salesOnly = document.getElementById("velocity-mode").value === "sales_only";
-  const columns = (() => {
-    if (activeResultsTab === "status") {
+  function renderResults(payload) {
+    latestPlanPayload = payload;
+    const rows = sortRowsByProductName(payload.rows || []);
+    const summary = payload.summary || {};
+    const salesOnly = document.getElementById("velocity-mode").value === "sales_only";
+    const historyOnlyRows = rows.map((row) => buildHistoryOnlyDriverRow(row));
+    const displayRows = activeResultsTab === "history-only" ? historyOnlyRows : rows;
+    updateResultsCalloutCopy();
+    const columns = (() => {
+      if (activeResultsTab === "history-only") {
+        return salesOnly
+          ? [
+            ["Product", "product_name"],
+            ["Baseline velocity", "avg_daily_demand"],
+            ["On hand", "on_hand"],
+            ["In transit", "in_transit"],
+            ["History-only cover", "history_only_weeks_of_supply"],
+            ["History-only stockout", "history_only_stockout_date"],
+            ["History-only order-by", "history_only_order_by_date"],
+            ["History-only order trigger", "history_only_reorder_point_units"],
+            ["History-only order now", "history_only_order_units"],
+            ["History-only capital", "history_only_capital_required"],
+          ]
+          : [
+            ["Product", "product_name"],
+            ["Baseline velocity", "avg_daily_demand"],
+            ["Sample units", "sample_units_in_baseline"],
+            ["Units used", "units_used_for_velocity"],
+            ["Days used", "days_used_for_velocity"],
+            ["On hand", "on_hand"],
+            ["In transit", "in_transit"],
+            ["History-only cover", "history_only_weeks_of_supply"],
+            ["History-only stockout", "history_only_stockout_date"],
+            ["History-only order-by", "history_only_order_by_date"],
+            ["History-only order now", "history_only_order_units"],
+            ["History-only capital", "history_only_capital_required"],
+          ];
+      }
+      if (activeResultsTab === "status") {
+        return salesOnly
+          ? [
+            ["Product", "product_name"],
+            ["Status", "status"],
+            ["Baseline velocity", "avg_daily_demand"],
+            ["Plan velocity", "forecast_daily_demand"],
+            ["On hand", "on_hand"],
+            ["In transit", "in_transit"],
+            ["Transit ETA", "transit_eta"],
+            ["Transit gap", "transit_gap_days"],
+            ["On-hand cover (recent)", "weeks_on_hand_recent"],
+            ["Total cover (plan)", "weeks_of_supply"],
+            ["Planned order trigger", "reorder_point_units"],
+            ["Projected stockout date", "projected_stockout_date"],
+            ["Order-by date", "reorder_date"],
+          ]
+          : [
+            ["Product", "product_name"],
+            ["Status", "status"],
+            ["Baseline velocity", "avg_daily_demand"],
+            ["Plan velocity", "forecast_daily_demand"],
+            ["Sample units", "sample_units_in_baseline"],
+            ["Units used", "units_used_for_velocity"],
+            ["Days used", "days_used_for_velocity"],
+            ["On hand", "on_hand"],
+            ["In transit", "in_transit"],
+            ["Transit ETA", "transit_eta"],
+            ["Transit gap", "transit_gap_days"],
+            ["On-hand cover (recent)", "weeks_on_hand_recent"],
+            ["Total cover (plan)", "weeks_of_supply"],
+            ["Planned order trigger", "reorder_point_units"],
+            ["Projected stockout date", "projected_stockout_date"],
+            ["Order-by date", "reorder_date"],
+          ];
+      }
+
       return salesOnly
         ? [
           ["Product", "product_name"],
           ["Status", "status"],
-          ["Baseline velocity", "avg_daily_demand"],
-          ["Plan velocity", "forecast_daily_demand"],
           ["On hand", "on_hand"],
           ["In transit", "in_transit"],
-          ["Transit ETA", "transit_eta"],
-          ["Transit gap", "transit_gap_days"],
-          ["On-hand cover (recent)", "weeks_on_hand_recent"],
-          ["Total cover (plan)", "weeks_of_supply"],
-          ["Projected stockout date", "projected_stockout_date"],
+          ["Planned order trigger", "reorder_point_units"],
+          ["Order now", "recommended_order_units"],
+          ["Capital needed", "capital_required"],
           ["Order-by date", "reorder_date"],
+          ["Projected stockout date", "projected_stockout_date"],
+          ["Transit ETA", "transit_eta"],
+          ["Total cover (plan)", "weeks_of_supply"],
         ]
         : [
           ["Product", "product_name"],
           ["Status", "status"],
-          ["Baseline velocity", "avg_daily_demand"],
-          ["Plan velocity", "forecast_daily_demand"],
-          ["Units used", "units_used_for_velocity"],
-          ["Days used", "days_used_for_velocity"],
           ["On hand", "on_hand"],
           ["In transit", "in_transit"],
-          ["Transit ETA", "transit_eta"],
-          ["Transit gap", "transit_gap_days"],
-          ["On-hand cover (recent)", "weeks_on_hand_recent"],
-          ["Total cover (plan)", "weeks_of_supply"],
-          ["Projected stockout date", "projected_stockout_date"],
+          ["Planned order trigger", "reorder_point_units"],
+          ["Order now", "recommended_order_units"],
+          ["Capital needed", "capital_required"],
           ["Order-by date", "reorder_date"],
+          ["Projected stockout date", "projected_stockout_date"],
+          ["Transit ETA", "transit_eta"],
+          ["Total cover (plan)", "weeks_of_supply"],
+          ["Units used", "units_used_for_velocity"],
+          ["Days used", "days_used_for_velocity"],
         ];
+    })();
+    resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
+    if (activeResultsTab === "history-only") {
+      const historyOrderUnitsTotal = historyOnlyRows.reduce((sum, row) => sum + Number(row.history_only_order_units || 0), 0);
+      const historyCapitalTotal = historyOnlyRows.reduce((sum, row) => sum + Number(row.history_only_capital_required || 0), 0);
+      resultSummary.innerHTML = [
+        '<span class="summary-pill summary-pill-muted">History-only baseline</span>',
+        `<span class="summary-pill summary-pill-watch">Total order ${integer(historyOrderUnitsTotal)}</span>`,
+        `<span class="summary-pill summary-pill-healthy">Capital ${money(historyCapitalTotal)}</span>`,
+        inventoryUploaded ? "" : `<span class="summary-pill summary-pill-muted">No inventory uploaded yet</span>`,
+      ].filter(Boolean).join("");
+    } else {
+      resultSummary.innerHTML = [
+        `<span class="summary-pill summary-pill-critical">Critical ${summary.critical_on_hand || 0}</span>`,
+        `<span class="summary-pill summary-pill-urgent">Urgent ${summary.urgent || 0}</span>`,
+        `<span class="summary-pill summary-pill-transit">Transit gap ${summary.transit_gap || 0}</span>`,
+        `<span class="summary-pill summary-pill-watch">Watch ${summary.watch || 0}</span>`,
+        `<span class="summary-pill summary-pill-healthy">Healthy ${summary.healthy || 0}</span>`,
+        `<span class="summary-pill summary-pill-spoilage">Spoilage ${summary.spoilage_risk || 0}</span>`,
+        inventoryUploaded ? "" : `<span class="summary-pill summary-pill-muted">No inventory uploaded yet</span>`,
+      ].filter(Boolean).join("");
     }
-
-    // Reorder view (action-oriented)
-    return salesOnly
-      ? [
-        ["Product", "product_name"],
-        ["Status", "status"],
-        ["Order now", "recommended_order_units"],
-        ["Capital needed", "capital_required"],
-        ["Order-by date", "reorder_date"],
-        ["Projected stockout date", "projected_stockout_date"],
-        ["On hand", "on_hand"],
-        ["In transit", "in_transit"],
-        ["Transit ETA", "transit_eta"],
-        ["Total cover (plan)", "weeks_of_supply"],
-      ]
-      : [
-        ["Product", "product_name"],
-        ["Status", "status"],
-        ["Order now", "recommended_order_units"],
-        ["Capital needed", "capital_required"],
-        ["Order-by date", "reorder_date"],
-        ["Projected stockout date", "projected_stockout_date"],
-        ["Units used", "units_used_for_velocity"],
-        ["Days used", "days_used_for_velocity"],
-        ["On hand", "on_hand"],
-        ["In transit", "in_transit"],
-        ["Transit ETA", "transit_eta"],
-        ["Total cover (plan)", "weeks_of_supply"],
-      ];
-  })();
-  resultsHead.innerHTML = `<tr>${columns.map(([label]) => renderHeaderCell(label)).join("")}</tr>`;
-  resultSummary.innerHTML = [
-    `<span class="summary-pill summary-pill-critical">Critical ${summary.critical_on_hand || 0}</span>`,
-    `<span class="summary-pill summary-pill-urgent">Urgent ${summary.urgent || 0}</span>`,
-    `<span class="summary-pill summary-pill-transit">Transit gap ${summary.transit_gap || 0}</span>`,
-    `<span class="summary-pill summary-pill-watch">Watch ${summary.watch || 0}</span>`,
-    `<span class="summary-pill summary-pill-healthy">Healthy ${summary.healthy || 0}</span>`,
-    `<span class="summary-pill summary-pill-spoilage">Spoilage ${summary.spoilage_risk || 0}</span>`,
-    inventoryUploaded ? "" : `<span class="summary-pill summary-pill-muted">No inventory uploaded yet</span>`,
-  ].filter(Boolean).join("");
-  if (!rows.length) {
-    resultsBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">No planning rows matched the current inputs.</td></tr>`;
-    renderMonthlyPlan(payload.monthlyPlan || { months: [], rows: [] });
-    renderProductMix(payload.productMix || { rows: [], totals: {} });
-    renderSkuSalesSummary(payload.skuSalesSummary || { rows: [], sourceRows: 0 });
-    renderHistoricalTrend(payload.historicalTrend || { years: [], monthlyTotals: [], productMonthly: [], yoyByMonth: [] }, payload.monthlyPlan?.year || forecastYear);
-    renderLaunchPlanning(payload.launchPlanning || { rows: [] });
-    return;
-  }
-  const totals = rows.reduce((acc, row) => {
+    if (!displayRows.length) {
+      resultsBody.innerHTML = `<tr><td colspan="${columns.length}" class="empty">No planning rows matched the current inputs.</td></tr>`;
+      renderMonthlyPlan(payload.monthlyPlan || { months: [], rows: [] });
+      renderProductMix(payload.productMix || { rows: [], totals: {} });
+      renderSkuSalesSummary(payload.skuSalesSummary || { rows: [], sourceRows: 0 });
+      renderHistoricalTrend(payload.historicalTrend || { years: [], monthlyTotals: [], productMonthly: [], yoyByMonth: [] }, payload.monthlyPlan?.year || forecastYear);
+      renderLaunchPlanning(payload.launchPlanning || { rows: [] });
+      return;
+    }
+    const totals = displayRows.reduce((acc, row) => {
     [
       "sales_units_in_baseline",
       "sample_units_in_baseline",
@@ -2562,16 +2765,26 @@ function renderResults(payload) {
       "safety_stock_units",
       "recommended_order_units",
       "capital_required",
+      "history_only_reorder_point_units",
+      "history_only_order_units",
+      "history_only_capital_required",
     ].forEach((key) => {
       acc[key] = (acc[key] || 0) + Number(row[key] || 0);
     });
     return acc;
   }, {});
-  const renderCell = (key, row) => {
+    const renderCell = (key, row) => {
     if (key === "status") return `<span class="status status-${String(row.status || "").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}">${row.status || ""}</span>`;
-    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required") return money(row[key]);
+    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required" || key === "history_only_capital_required") return money(row[key]);
     if (key === "mix_pct") return percent(row[key]);
-    if (key === "recommended_order_units") return integer(row[key]);
+    if (key === "recommended_order_units") {
+      return `
+        <span class="order-now-emphasis">
+          <span class="order-now-value">${escapeHtml(integer(row[key]))}</span>
+        </span>
+      `.trim();
+    }
+    if (key === "history_only_reorder_point_units" || key === "history_only_order_units") return integer(row[key]);
     if (key === "weeks_on_hand_recent") {
       const label = formatSupplyLeftLabel({ days_of_supply: row.days_on_hand_recent, weeks_of_supply: row.weeks_on_hand_recent });
       if (typeof label === "string") return escapeHtml(label);
@@ -2584,6 +2797,16 @@ function renderResults(payload) {
     }
     if (key === "weeks_of_supply") {
       const label = formatSupplyLeftLabel(row);
+      if (typeof label === "string") return escapeHtml(label);
+      return `
+        <span class="cell-split">
+          <span class="cell-split-main">${escapeHtml(label.primary)}</span>
+          <span class="cell-split-meta">${escapeHtml(label.secondary)}</span>
+        </span>
+      `.trim();
+    }
+    if (key === "history_only_weeks_of_supply") {
+      const label = formatSupplyLeftLabel({ days_of_supply: row.history_only_days_of_supply, weeks_of_supply: row.history_only_weeks_of_supply });
       if (typeof label === "string") return escapeHtml(label);
       return `
         <span class="cell-split">
@@ -2609,6 +2832,30 @@ function renderResults(payload) {
         <span class="cell-split cell-split-inline cell-split-inline-middle">
           <span class="cell-split-main">${escapeHtml(number(planVelocity))}</span>
           <span class="cell-split-meta">${deltaLabel}</span>
+        </span>
+      `.trim();
+    }
+    if (key === "history_only_stockout_date" || key === "history_only_order_by_date") {
+      const dateValue = key === "history_only_stockout_date" ? row.history_only_stockout_date : row.history_only_order_by_date;
+      const date = humanDate(dateValue || "");
+      if (!date) return "-";
+      if (key === "history_only_order_by_date") {
+        const daysOfSupply = clampNumber(row.history_only_days_of_supply, null);
+        const leadTimeDays = clampNumber(row.used_lead_time_days, null);
+        const daysUntil = daysOfSupply !== null && leadTimeDays !== null ? (daysOfSupply - leadTimeDays) : null;
+        const countdown = daysUntil === null ? "" : (daysUntil < 0 ? "overdue" : formatCountdownLabel(daysUntil));
+        return `
+          <span class="cell-split">
+            <span class="cell-split-main">${escapeHtml(date)}</span>
+            <span class="cell-split-meta">${escapeHtml(countdown ? `(${countdown})` : "")}</span>
+          </span>
+        `.trim();
+      }
+      const countdown = formatCountdownLabel(row.history_only_days_of_supply);
+      return `
+        <span class="cell-split cell-split-inline">
+          <span class="cell-split-main">${escapeHtml(date)}</span>
+          ${countdown ? `<span class="cell-split-meta">in ${escapeHtml(countdown)}</span>` : ""}
         </span>
       `.trim();
     }
@@ -2656,29 +2903,54 @@ function renderResults(payload) {
         </span>
       `.trim();
     }
-    if (key === "product_name") return displayProductName(row[key] || "");
+    if (key === "product_name") {
+      const productLabel = escapeHtml(displayProductName(row[key] || ""));
+      if (activeResultsTab === "status" || activeResultsTab === "history-only") {
+        const triggerVisibility = buildTriggerVisibility(row, activeResultsTab === "history-only" ? "history-only" : "planned");
+        if (triggerVisibility.badgeHtml) {
+          return `
+            <span class="cell-split-stacked product-cell-emphasis">
+              <span class="cell-split-main">${productLabel}</span>
+              <span class="cell-split-meta">${triggerVisibility.badgeHtml}</span>
+            </span>
+          `.trim();
+        }
+      }
+      return productLabel;
+    }
     if (["transit_eta", "transit_started_on"].includes(key)) return humanDate(row[key] || "");
     return number(row[key]);
   };
-  const bodyRows = rows.map((row) => `<tr>${columns.map(([, key]) => `<td>${renderCell(key, row)}</td>`).join("")}</tr>`).join("");
-  const totalCell = (key) => {
+    const bodyRows = displayRows.map((row) => {
+      const triggerVisibility = activeResultsTab === "status"
+        ? buildTriggerVisibility(row, "planned")
+        : activeResultsTab === "history-only"
+          ? buildTriggerVisibility(row, "history-only")
+          : { rowClass: "" };
+      const rowClass = triggerVisibility.rowClass ? ` class="${triggerVisibility.rowClass}"` : "";
+      return `<tr${rowClass}>${columns.map(([, key]) => {
+        const cellClass = key === "recommended_order_units" ? ' class="order-now-cell"' : "";
+        return `<td${cellClass}>${renderCell(key, row)}</td>`;
+      }).join("")}</tr>`;
+    }).join("");
+    const totalCell = (key) => {
     if (key === "product_name") return "Totals";
     if (key === "mix_pct") return "100%";
-    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required") return money(totals[key] || 0);
-    if (["sales_units_in_baseline", "smoothed_units_in_baseline", "sample_units_in_baseline", "units_used_for_velocity", "days_used_for_velocity", "on_hand", "in_transit", "current_supply_units", "recommended_order_units"].includes(key)) {
+    if (key === "gross_sales_in_baseline" || key === "net_gross_sales_in_baseline" || key === "capital_required" || key === "history_only_capital_required") return money(totals[key] || 0);
+    if (["sales_units_in_baseline", "smoothed_units_in_baseline", "sample_units_in_baseline", "units_used_for_velocity", "days_used_for_velocity", "on_hand", "in_transit", "current_supply_units", "recommended_order_units", "history_only_reorder_point_units", "history_only_order_units"].includes(key)) {
       return number(totals[key] || 0);
     }
     if (key === "transit_gap_days") return "";
     return "";
   };
-  const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => `<td>${totalCell(key)}</td>`).join("")}</tr>`;
-  resultsBody.innerHTML = `${bodyRows}${totalsRow}`;
-  renderMonthlyPlan(payload.monthlyPlan || { months: [], rows: [] });
-  renderProductMix(payload.productMix || { rows: [], totals: {} });
-  renderSkuSalesSummary(payload.skuSalesSummary || { rows: [], sourceRows: 0 });
-  renderHistoricalTrend(payload.historicalTrend || { years: [], monthlyTotals: [], productMonthly: [], yoyByMonth: [] }, payload.monthlyPlan?.year || forecastYear);
-  renderLaunchPlanning(payload.launchPlanning || { rows: [] });
-}
+    const totalsRow = `<tr class="totals-row">${columns.map(([, key]) => `<td>${totalCell(key)}</td>`).join("")}</tr>`;
+    resultsBody.innerHTML = `${bodyRows}${totalsRow}`;
+    renderMonthlyPlan(payload.monthlyPlan || { months: [], rows: [] });
+    renderProductMix(payload.productMix || { rows: [], totals: {} });
+    renderSkuSalesSummary(payload.skuSalesSummary || { rows: [], sourceRows: 0 });
+    renderHistoricalTrend(payload.historicalTrend || { years: [], monthlyTotals: [], productMonthly: [], yoyByMonth: [] }, payload.monthlyPlan?.year || forecastYear);
+    renderLaunchPlanning(payload.launchPlanning || { rows: [] });
+  }
 
 function buildMonthModeGroups(months) {
   return months.reduce((groups, month) => {
@@ -5520,7 +5792,7 @@ document.getElementById("open-launch-module")?.addEventListener("click", () => {
 });
 try {
   const stored = window.localStorage.getItem(RESULTS_TAB_STORAGE_KEY);
-  setActiveResultsTab(stored === "status" ? "status" : "reorder");
+  setActiveResultsTab(stored === "status" || stored === "history-only" ? stored : "reorder");
 } catch {
   setActiveResultsTab("reorder");
 }

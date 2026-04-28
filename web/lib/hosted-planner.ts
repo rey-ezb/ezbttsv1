@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolvePlannerDataSourceMode, type PlannerDataSourceMode } from "./data-source-mode";
@@ -134,6 +135,40 @@ type LoadedState = {
   loadedAt: string;
 };
 
+type PlanningRunHistoryRow = {
+  product_name: string;
+  status: string;
+  recommended_order_units: number;
+  capital_required: number;
+  reorder_date: string | null;
+  projected_stockout_date: string | null;
+  forecast_daily_demand: number;
+  current_supply_units: number;
+};
+
+export type PlanningRunHistoryDoc = {
+  id: string;
+  createdAt: string;
+  dataSource: string;
+  dataSourceDetail: string;
+  selectedMonthKey: string;
+  selectedMonthLabel: string;
+  planningYear: number;
+  baselineStart: string;
+  baselineEnd: string;
+  horizonStart: string;
+  horizonEnd: string;
+  velocityMode: string;
+  excludeSpikes: boolean;
+  leadTimeDays: number;
+  totalRecommendedUnits: number;
+  totalCapitalRequired: number;
+  exceptionCount: number;
+  summary: Record<string, number>;
+  topRecommendation: PlanningRunHistoryRow | null;
+  rows: PlanningRunHistoryRow[];
+};
+
 type UploadedDemandRow = DemandUploadInputRow;
 export type EditableSkuMappingRow = {
   skuId: string;
@@ -154,6 +189,7 @@ const LOCAL_UPLOAD_AUDIT_ORDERS_FILE = path.join(DATA_DIR, "planning_upload_audi
 const LOCAL_UPLOAD_AUDIT_SAMPLES_FILE = path.join(DATA_DIR, "planning_upload_audit_samples.json");
 const LOCAL_CAMPAIGNS_FILE = path.join(DATA_DIR, "planning_campaigns.json");
 const LOCAL_LAUNCH_PLANS_FILE = path.join(DATA_DIR, "planning_launch_plans.json");
+const LOCAL_RUN_HISTORY_FILE = path.join(DATA_DIR, "planning_run_history.json");
 const LIVE_CACHE_MS = 5 * 60 * 1000;
 const PRODUCT_METADATA: Record<
   string,
@@ -806,6 +842,108 @@ async function loadBundledState() {
 async function readCollection<T>(name: string) {
   const snapshot = await getFirebaseAdminDb().collection(name).get();
   return snapshot.docs.map((doc) => doc.data() as T);
+}
+
+export async function loadPlanningRunHistory(preferredDataSource?: PlannerDataSourceMode | null) {
+  if (prefersLocalData(preferredDataSource)) {
+    const fileText = await readFile(LOCAL_RUN_HISTORY_FILE, "utf8").catch(() => "[]");
+    const parsed = JSON.parse(fileText) as PlanningRunHistoryDoc[];
+    return parsed
+      .filter((entry) => entry && entry.createdAt)
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      .slice(0, 20);
+  }
+
+  const rows = await readCollection<PlanningRunHistoryDoc>("planningRunHistory");
+  return rows
+    .filter((entry) => entry && entry.createdAt)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .slice(0, 20);
+}
+
+export async function savePlanningRunHistory(
+  plan: Awaited<ReturnType<typeof runHostedPlanning>>,
+  params: {
+    baselineStart?: string;
+    baselineEnd?: string;
+    horizonStart?: string;
+    horizonEnd?: string;
+    velocityMode?: string;
+    excludeSpikes?: boolean;
+    leadTimeDays?: number;
+    planningYear?: number;
+  },
+  options: { preferredDataSource?: PlannerDataSourceMode | null; dataSource: string; dataSourceDetail: string },
+) {
+  const monthValue = params.horizonStart || plan.rows?.[0]?.horizon_start || new Date().toISOString().slice(0, 10);
+  const selectedMonthKey = monthKey(monthValue);
+  const selectedMonthDate = new Date(`${selectedMonthKey}-01T00:00:00Z`);
+  const rows = Array.isArray(plan.rows) ? plan.rows : [];
+  const totalRecommendedUnits = rows.reduce((sum, row) => sum + asNumber(row.recommended_order_units), 0);
+  const totalCapitalRequired = rows.reduce((sum, row) => sum + asNumber(row.capital_required), 0);
+  const topRow = [...rows].sort((a, b) => asNumber(b.recommended_order_units) - asNumber(a.recommended_order_units))[0] || null;
+
+  const entry: PlanningRunHistoryDoc = {
+    id: `${new Date().toISOString()}__${randomUUID()}`,
+    createdAt: new Date().toISOString(),
+    dataSource: options.dataSource,
+    dataSourceDetail: options.dataSourceDetail,
+    selectedMonthKey,
+    selectedMonthLabel: selectedMonthDate.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" }),
+    planningYear: Number(params.planningYear || plan.monthlyPlan?.year || new Date().getUTCFullYear()),
+    baselineStart: String(params.baselineStart || rows[0]?.baseline_start || ""),
+    baselineEnd: String(params.baselineEnd || rows[0]?.baseline_end || ""),
+    horizonStart: String(params.horizonStart || rows[0]?.horizon_start || ""),
+    horizonEnd: String(params.horizonEnd || rows[0]?.horizon_end || ""),
+    velocityMode: String(params.velocityMode || "sales_only"),
+    excludeSpikes: Boolean(params.excludeSpikes),
+    leadTimeDays: asNumber(params.leadTimeDays),
+    totalRecommendedUnits,
+    totalCapitalRequired,
+    exceptionCount: asNumber(plan.summary?.exceptions),
+    summary: {
+      critical_on_hand: asNumber(plan.summary?.critical_on_hand),
+      urgent: asNumber(plan.summary?.urgent),
+      transit_gap: asNumber(plan.summary?.transit_gap),
+      watch: asNumber(plan.summary?.watch),
+      healthy: asNumber(plan.summary?.healthy),
+      spoilage_risk: asNumber(plan.summary?.spoilage_risk),
+      no_demand: asNumber(plan.summary?.no_demand),
+      exceptions: asNumber(plan.summary?.exceptions),
+    },
+    topRecommendation: topRow
+      ? {
+        product_name: String(topRow.product_name || ""),
+        status: String(topRow.status || ""),
+        recommended_order_units: asNumber(topRow.recommended_order_units),
+        capital_required: asNumber(topRow.capital_required),
+        reorder_date: topRow.reorder_date || null,
+        projected_stockout_date: topRow.projected_stockout_date || null,
+        forecast_daily_demand: asNumber(topRow.forecast_daily_demand),
+        current_supply_units: asNumber(topRow.current_supply_units),
+      }
+      : null,
+    rows: rows.map((row) => ({
+      product_name: String(row.product_name || ""),
+      status: String(row.status || ""),
+      recommended_order_units: asNumber(row.recommended_order_units),
+      capital_required: asNumber(row.capital_required),
+      reorder_date: row.reorder_date || null,
+      projected_stockout_date: row.projected_stockout_date || null,
+      forecast_daily_demand: asNumber(row.forecast_daily_demand),
+      current_supply_units: asNumber(row.current_supply_units),
+    })),
+  };
+
+  if (prefersLocalData(options.preferredDataSource)) {
+    const existing = await loadPlanningRunHistory(options.preferredDataSource);
+    const merged = [entry, ...existing].slice(0, 30);
+    await writeFile(LOCAL_RUN_HISTORY_FILE, JSON.stringify(merged, null, 2), "utf8");
+    return merged.slice(0, 20);
+  }
+
+  await getFirebaseAdminDb().collection("planningRunHistory").doc(entry.id).set(entry, { merge: true });
+  return await loadPlanningRunHistory(options.preferredDataSource);
 }
 
 export async function loadHostedSkuMappingOverrides(preferredDataSource?: PlannerDataSourceMode | null) {
@@ -1682,6 +1820,8 @@ export async function runHostedPlanning(params: {
       seller_sku_resolved: sellerSku,
       platform: "TikTok",
       unit_cogs: getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
+      moq,
+      case_pack: casePack,
       estimated_cogs: demand.salesUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
       capital_required: recommendedOrderUnits * getProductSetting(productName, "cogs", getUnitCogs(productName, state.launchPlans)),
       days_of_supply: daysOfSupply !== Infinity ? daysOfSupply : null,
@@ -1709,7 +1849,7 @@ export async function runHostedPlanning(params: {
   const latestDemandDate = state.demand.at(-1)?.date || baselineEnd;
   const latestDemandMonthEnd = endOfMonth(toDate(latestDemandDate));
   const latestActualMonthIsPartial = latestDemandDate < formatDate(latestDemandMonthEnd);
-  const monthRows = productNames.map((productName) => {
+  const buildPlanYearRows = (useActualsForClosedMonths: boolean) => productNames.map((productName) => {
     const row: Record<string, unknown> = { product_name: productName, year_total_units: 0, year_mix_pct: 0 };
     const grossRow: Record<string, number | string> = { product_name: productName, year_total_gross: 0 };
     const avgGrossPerUnit = asNumber(demandByProduct.get(productName)?.grossSales) > 0 && asNumber(demandByProduct.get(productName)?.salesUnits) > 0
@@ -1717,7 +1857,7 @@ export async function runHostedPlanning(params: {
       : 0;
     for (let month = 1; month <= 12; month += 1) {
       const key = `${planningYear}-${String(month).padStart(2, "0")}`;
-      if (key <= latestActualMonthKey) {
+      if (useActualsForClosedMonths && key <= latestActualMonthKey) {
         row[key] = productMonthly.get(productName)?.get(key) || 0;
         grossRow[key] = productMonthlyGross.get(productName)?.get(key) || 0;
       } else {
@@ -1759,6 +1899,9 @@ export async function runHostedPlanning(params: {
     row.monthly_gross = grossRow;
     return row;
   });
+
+  const monthRows = buildPlanYearRows(true);
+  const forecastMonthRows = buildPlanYearRows(false);
 
   const yearTotalUnits = monthRows.reduce((sum, row) => sum + asNumber(row.year_total_units), 0);
   for (const row of monthRows) {
