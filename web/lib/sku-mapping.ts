@@ -11,6 +11,8 @@ export type TikTokSkuMapping = {
 export type DemandUploadInputRow = {
   date?: string;
   order_date?: string;
+  paid_date?: string;
+  created_date?: string;
   platform?: string;
   product_name?: string;
   sku_id?: string;

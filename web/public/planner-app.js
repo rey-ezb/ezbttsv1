@@ -907,7 +907,9 @@ function normalizeUploadRows(rawRows, platform) {
     const returnedQuantity = parseUploadNumber(row[returnedQuantityCol]);
     const grossSales = parseUploadNumber(row[grossSalesCol]);
     const sellerDiscount = parseUploadNumber(sellerDiscountCol ? row[sellerDiscountCol] : 0);
-    const orderDate = parseUploadDate(row[paidTimeCol]) || parseUploadDate(row[createdTimeCol]);
+    const paidDate = parseUploadDate(row[paidTimeCol]);
+    const createdDate = parseUploadDate(row[createdTimeCol]);
+    const orderDate = paidDate || createdDate;
     const statusText = `${orderStatus} ${orderSubstatus} ${cancelType}`.toLowerCase();
     const isCancelled = statusText.includes("cancel") || Boolean(parseUploadDate(row[cancelledTimeCol]));
     const netUnits = isCancelled ? 0 : Math.max(quantity - returnedQuantity, 0);
@@ -930,6 +932,8 @@ function normalizeUploadRows(rawRows, platform) {
       platform: cleanUploadText(platform) || "TikTok",
       order_id: cleanUploadText(row[orderIdCol]),
       order_date: orderDate,
+      paid_date: paidDate,
+      created_date: createdDate,
       sku_id: cleanUploadText(row[skuIdCol]),
       product_name: productName,
       seller_sku_resolved: cleanUploadText(row[sellerSkuCol]) || cleanUploadText(row[bundleSkuCol]),
@@ -939,7 +943,7 @@ function normalizeUploadRows(rawRows, platform) {
       net_gross_sales: netGrossSalesEst,
       net_units: netUnits,
     };
-  }).filter((row) => row.order_date && row.product_name);
+  }).filter((row) => (row.order_date || row.paid_date || row.created_date) && row.product_name);
 }
 
 function aggregateLeanDemandRows(normalizedRows, platform) {
@@ -997,15 +1001,19 @@ async function buildLeanUploadPayload(files, platform) {
   // Group by day + SKU so the JSON stays small even for large historical exports.
   const grouped = new Map();
   allNormalizedRows.forEach((row) => {
-    const date = cleanUploadText(row.order_date).slice(0, 10);
-    if (!date) return;
+    const paidDate = cleanUploadText(row.paid_date || row.order_date).slice(0, 10);
+    const createdDate = cleanUploadText(row.created_date || row.order_date || row.paid_date).slice(0, 10);
+    const orderDate = paidDate || createdDate;
+    if (!orderDate) return;
     const skuId = cleanUploadText(row.sku_id);
     const listingName = cleanUploadText(row.product_name);
     const sellerSku = cleanUploadText(row.seller_sku_resolved);
-    const key = `${date}__${skuId}__${sellerSku}__${listingName}`;
+    const key = `${paidDate}__${createdDate}__${skuId}__${sellerSku}__${listingName}`;
     const current = grouped.get(key) || {
       platform: cleanUploadText(platform) || "TikTok",
-      order_date: date,
+      order_date: orderDate,
+      paid_date: paidDate,
+      created_date: createdDate,
       sku_id: skuId,
       product_name: listingName,
       seller_sku_resolved: sellerSku,
@@ -1019,8 +1027,8 @@ async function buildLeanUploadPayload(files, platform) {
     grouped.set(key, current);
   });
 
-  const rows = Array.from(grouped.values()).filter((row) => row.order_date && row.product_name);
-  const uploadedDates = Array.from(new Set(rows.map((row) => row.order_date))).sort();
+  const rows = Array.from(grouped.values()).filter((row) => (row.order_date || row.paid_date || row.created_date) && row.product_name);
+  const uploadedDates = Array.from(new Set(rows.map((row) => cleanUploadText(row.paid_date || row.order_date).slice(0, 10)).filter(Boolean))).sort();
   return {
     platform: cleanUploadText(platform) || "TikTok",
     rows,
@@ -1033,7 +1041,7 @@ async function buildLeanUploadPayload(files, platform) {
 function chunkRowsByDate(rows, maxRows = 1500) {
   const byDate = new Map();
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const date = cleanUploadText(row.order_date || row.date).slice(0, 10);
+    const date = cleanUploadText(row.paid_date || row.order_date || row.date).slice(0, 10);
     if (!date) return;
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push(row);
@@ -1328,6 +1336,7 @@ function defaultPlannerSettings() {
       defaultLeadTimeDays: 8,
       safetyStockWeeksH1: 3,
       safetyStockWeeksH2: 5,
+      orderDateBasis: "created_time",
       viralSmoothingEnabled: true,
       viralSmoothingExcludeTopDays: 2,
       viralSmoothingMinSellingDays: 14,
@@ -1355,6 +1364,7 @@ function normalizePlannerSettings(settings) {
       defaultLeadTimeDays: Math.max(1, Number(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
       safetyStockWeeksH1: Math.max(0, Number(global.safetyStockWeeksH1) || defaults.global.safetyStockWeeksH1),
       safetyStockWeeksH2: Math.max(0, Number(global.safetyStockWeeksH2) || defaults.global.safetyStockWeeksH2),
+      orderDateBasis: String(global.orderDateBasis || defaults.global.orderDateBasis).toLowerCase() === "created_time" ? "created_time" : "paid_time",
       viralSmoothingEnabled: global.viralSmoothingEnabled === undefined ? defaults.global.viralSmoothingEnabled : Boolean(global.viralSmoothingEnabled),
       viralSmoothingExcludeTopDays: Math.max(0, Math.min(10, Math.floor(Number(global.viralSmoothingExcludeTopDays) || defaults.global.viralSmoothingExcludeTopDays))),
       viralSmoothingMinSellingDays: Math.max(0, Math.min(120, Math.floor(Number(global.viralSmoothingMinSellingDays) || defaults.global.viralSmoothingMinSellingDays))),
@@ -2612,6 +2622,7 @@ function applyDefaults(defaults) {
   const excludeSpikesInput = document.getElementById("exclude-spikes");
   if (excludeSpikesInput) excludeSpikesInput.checked = sharedPlannerSettings?.global?.viralSmoothingEnabled ?? defaults.excludeSpikes ?? true;
   document.getElementById("velocity-mode").value = defaults.velocityMode || "sales_only";
+  document.getElementById("order-date-basis").value = defaults.orderDateBasis || "paid_time";
   safetyRuleNote.textContent = `Planning period = the future dates you want to cover. Safety stock: ${defaults.safetyRule || ""}`;
   renderPlannerSettings(sharedPlannerSettings);
   renderForecastSummary();
@@ -4685,6 +4696,8 @@ async function runPlanningFromForm(showStatus = true) {
     payload.monthlyForecastPcts = Object.fromEntries(
       Object.entries(payload.monthlyForecastSettings).map(([key, setting]) => [key, Number(setting?.upliftPct || 0)]),
     );
+    const orderDateBasisInput = document.getElementById("order-date-basis");
+    payload.orderDateBasis = orderDateBasisInput?.value || "paid_time";
     payload.customSettings = sharedPlannerSettings || defaultPlannerSettings();
     payload.marketingConfig = marketingConfigSource === "api" ? marketingConfig : readLocalMarketingConfig();
     const plan = await fetchJson("/api/plan", {

@@ -37,6 +37,7 @@ web/tsconfig.tsbuildinfo
 .vercel-wrapper/
 vercel-deploy*.log
 web/start*.log
+web/reprocess_dev_*.log
 
 web/node_modules/
 web/.next/

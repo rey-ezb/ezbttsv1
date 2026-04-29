@@ -22,6 +22,7 @@ export async function GET(request: NextRequest) {
         planningYear: workspace.defaults.forecastYear,
         monthlyForecastSettings: workspace.defaults.forecastSettings,
         customSettings: workspace.defaults.sharedSettings,
+        orderDateBasis: workspace.defaults.orderDateBasis,
       },
       { forceRefresh: false, preferredDataSource },
     );

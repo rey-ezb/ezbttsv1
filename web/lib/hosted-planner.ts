@@ -88,12 +88,24 @@ type PlannerSharedSettings = {
     defaultLeadTimeDays: number;
     safetyStockWeeksH1: number; // Jan-Jun
     safetyStockWeeksH2: number; // Jul-Dec
+    orderDateBasis: PlannerOrderDateBasis;
     viralSmoothingEnabled: boolean;
     viralSmoothingExcludeTopDays: number;
     viralSmoothingMinSellingDays: number;
   };
   products: Record<string, PlannerProductSettings>;
 };
+
+export type PlannerOrderDateBasis = "paid_time" | "created_time";
+
+const DATE_BASIS_PAID: PlannerOrderDateBasis = "paid_time";
+const DATE_BASIS_CREATED: PlannerOrderDateBasis = "created_time";
+
+function normalizeOrderDateBasis(value: unknown): PlannerOrderDateBasis {
+  const cleaned = String(value || "").trim().toLowerCase();
+  if (cleaned === DATE_BASIS_CREATED) return DATE_BASIS_CREATED;
+  return DATE_BASIS_PAID;
+}
 
 type UploadAuditDoc = {
   uploadType: "orders" | "samples";
@@ -185,12 +197,19 @@ const PLANNER_SETTINGS_FILE = path.join(DATA_DIR, "planner_shared_settings.json"
 const TIKTOK_SKU_MAPPING_FILE = path.join(DATA_DIR, "tiktok_sku_mapping.csv");
 const LOCAL_SKU_MAPPING_OVERRIDE_FILE = path.join(process.cwd(), "..", "Data", "Tiktok SKU mapping - Sheet1.csv");
 const LOCAL_SKU_SALES_FILE = path.join(DATA_DIR, "planning_sku_sales_daily.csv");
+const LOCAL_DEMAND_CREATED_FILE = path.join(DATA_DIR, "planning_demand_daily_created.csv");
+const LOCAL_SKU_SALES_CREATED_FILE = path.join(DATA_DIR, "planning_sku_sales_daily_created.csv");
 const LOCAL_UPLOAD_AUDIT_ORDERS_FILE = path.join(DATA_DIR, "planning_upload_audit_orders.json");
 const LOCAL_UPLOAD_AUDIT_SAMPLES_FILE = path.join(DATA_DIR, "planning_upload_audit_samples.json");
 const LOCAL_CAMPAIGNS_FILE = path.join(DATA_DIR, "planning_campaigns.json");
 const LOCAL_LAUNCH_PLANS_FILE = path.join(DATA_DIR, "planning_launch_plans.json");
 const LOCAL_RUN_HISTORY_FILE = path.join(DATA_DIR, "planning_run_history.json");
 const LIVE_CACHE_MS = 5 * 60 * 1000;
+const DEMAND_COLLECTION_PAID = "planningDemandDaily";
+const DEMAND_COLLECTION_CREATED = "planningDemandDailyCreated";
+const DEMAND_COLLECTION_SAMPLES = "planningSamplesDaily";
+const SKU_SALES_COLLECTION_PAID = "planningSkuSalesDaily";
+const SKU_SALES_COLLECTION_CREATED = "planningSkuSalesDailyCreated";
 const PRODUCT_METADATA: Record<
   string,
   {
@@ -239,16 +258,28 @@ const DEFAULT_PLANNER_PRODUCT_SETTINGS: Record<string, PlannerProductSettings> =
   "Variety Pack": { cogs: 13.35, moq: 0, casePack: 4, shelfLife: 24 },
 };
 
-let liveStateCache: { expiresAt: number; value: LoadedState } | null = null;
-let snapshotStateCache: SnapshotState | null = null;
+let liveStateCache: Record<PlannerOrderDateBasis, { expiresAt: number; value: LoadedState } | null> = {
+  [DATE_BASIS_PAID]: null,
+  [DATE_BASIS_CREATED]: null,
+} as Record<PlannerOrderDateBasis, { expiresAt: number; value: LoadedState } | null>;
+let snapshotStateCache: Record<PlannerOrderDateBasis, SnapshotState | null> = {
+  [DATE_BASIS_PAID]: null,
+  [DATE_BASIS_CREATED]: null,
+} as Record<PlannerOrderDateBasis, SnapshotState | null>;
 
 function prefersLocalData(preferredDataSource?: PlannerDataSourceMode | null) {
   return resolvePlannerDataSourceMode(preferredDataSource) === "local";
 }
 
 export function invalidateHostedPlannerCache() {
-  liveStateCache = null;
-  snapshotStateCache = null;
+  liveStateCache = {
+    [DATE_BASIS_PAID]: null,
+    [DATE_BASIS_CREATED]: null,
+  } as Record<PlannerOrderDateBasis, { expiresAt: number; value: LoadedState } | null>;
+  snapshotStateCache = {
+    [DATE_BASIS_PAID]: null,
+    [DATE_BASIS_CREATED]: null,
+  } as Record<PlannerOrderDateBasis, SnapshotState | null>;
 }
 
 // Used by local-only config endpoints to keep overrides lean.
@@ -492,6 +523,7 @@ function buildDefaultPlannerSettings(): PlannerSharedSettings {
       defaultLeadTimeDays: 8,
       safetyStockWeeksH1: 3,
       safetyStockWeeksH2: 5,
+      orderDateBasis: DATE_BASIS_CREATED,
       viralSmoothingEnabled: true,
       viralSmoothingExcludeTopDays: 2,
       viralSmoothingMinSellingDays: 14,
@@ -518,6 +550,7 @@ function normalizePlannerSharedSettings(rawSettings: unknown): PlannerSharedSett
       defaultLeadTimeDays: Math.max(1, asNumber(global.defaultLeadTimeDays) || defaults.global.defaultLeadTimeDays),
       safetyStockWeeksH1: Math.max(0, asNumber(global.safetyStockWeeksH1) || defaults.global.safetyStockWeeksH1),
       safetyStockWeeksH2: Math.max(0, asNumber(global.safetyStockWeeksH2) || defaults.global.safetyStockWeeksH2),
+      orderDateBasis: normalizeOrderDateBasis(global.orderDateBasis),
       viralSmoothingEnabled: global.viralSmoothingEnabled === undefined ? defaults.global.viralSmoothingEnabled : Boolean(global.viralSmoothingEnabled),
       viralSmoothingExcludeTopDays: Math.max(0, Math.min(10, Math.floor(asNumber(global.viralSmoothingExcludeTopDays) || defaults.global.viralSmoothingExcludeTopDays))),
       viralSmoothingMinSellingDays: Math.max(0, Math.min(120, Math.floor(asNumber(global.viralSmoothingMinSellingDays) || defaults.global.viralSmoothingMinSellingDays))),
@@ -578,6 +611,30 @@ function normalizeUploadedDemandRows(rows: UploadedDemandRow[]) {
     grouped.set(key, current);
   }
   return Array.from(grouped.values()).sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
+}
+
+function selectDateForBasis(row: UploadedDemandRow, basis: PlannerOrderDateBasis) {
+  if (basis === DATE_BASIS_CREATED) {
+    return cleanText(row.created_date || row.order_date || row.paid_date || row.date).slice(0, 10);
+  }
+  return cleanText(row.paid_date || row.order_date || row.created_date || row.date).slice(0, 10);
+}
+
+function rowsForDateBasis(rows: UploadedDemandRow[], basis: PlannerOrderDateBasis): UploadedDemandRow[] {
+  return rows
+    .map((row) => {
+      const selectedDate = selectDateForBasis(row, basis);
+      return {
+        ...row,
+        date: selectedDate,
+        order_date: selectedDate,
+      };
+    })
+    .filter((row) => Boolean(cleanText(row.order_date)));
+}
+
+function uploadedDatesForBasis(rows: UploadedDemandRow[], basis: PlannerOrderDateBasis) {
+  return uniqueSorted(rows.map((row) => selectDateForBasis(row, basis)).filter(Boolean));
 }
 
 function demandDocId(row: DemandDoc) {
@@ -696,16 +753,19 @@ function campaignAverageFactor(campaigns: CampaignEventDoc[], rangeStart: string
   return 1 + (liftSum / days);
 }
 
-async function loadBundledState() {
-  if (snapshotStateCache) {
-    return snapshotStateCache;
+async function loadBundledState(orderDateBasis: PlannerOrderDateBasis = DATE_BASIS_PAID) {
+  const cached = snapshotStateCache[orderDateBasis];
+  if (cached) {
+    return cached;
   }
 
-  const [demandCsv, samplesCsv, inventoryCsv, skuSalesCsv, forecastDefaultsText, plannerSettingsText, ordersAuditText, samplesAuditText, campaignsText, launchPlansText] = await Promise.all([
+  const [demandCsv, demandCreatedCsv, samplesCsv, inventoryCsv, skuSalesCsv, skuSalesCreatedCsv, forecastDefaultsText, plannerSettingsText, ordersAuditText, samplesAuditText, campaignsText, launchPlansText] = await Promise.all([
     readFile(path.join(DATA_DIR, "planning_demand_daily.csv"), "utf8"),
+    readFile(LOCAL_DEMAND_CREATED_FILE, "utf8").catch(() => ""),
     readFile(path.join(DATA_DIR, "planning_samples_daily.csv"), "utf8"),
     readFile(path.join(DATA_DIR, "planning_inventory_daily.csv"), "utf8"),
     readFile(LOCAL_SKU_SALES_FILE, "utf8").catch(() => ""),
+    readFile(LOCAL_SKU_SALES_CREATED_FILE, "utf8").catch(() => ""),
     readFile(FORECAST_DEFAULTS_FILE, "utf8"),
     readFile(PLANNER_SETTINGS_FILE, "utf8").catch(() => JSON.stringify(buildDefaultPlannerSettings())),
     readFile(LOCAL_UPLOAD_AUDIT_ORDERS_FILE, "utf8").catch(() => ""),
@@ -714,7 +774,7 @@ async function loadBundledState() {
     readFile(LOCAL_LAUNCH_PLANS_FILE, "utf8").catch(() => ""),
   ]);
 
-  const demand = parseCsv(demandCsv).map((row) => ({
+  const parseDemandCsv = (csvText: string) => parseCsv(csvText).map((row) => ({
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
     product_name: canonicalizeProductName(row.product_name),
@@ -723,6 +783,9 @@ async function loadBundledState() {
     gross_sales: asNumber(row.gross_sales),
     net_gross_sales: asNumber(row.net_gross_sales),
   }));
+  const demandPaid = parseDemandCsv(demandCsv);
+  const demandCreated = parseDemandCsv(demandCreatedCsv);
+  const demand = orderDateBasis === DATE_BASIS_CREATED && demandCreated.length ? demandCreated : demandPaid;
 
   const samples = parseCsv(samplesCsv).map((row) => ({
     date: String(row.date || ""),
@@ -734,7 +797,7 @@ async function loadBundledState() {
     net_gross_sales: asNumber(row.net_gross_sales),
   }));
 
-  const skuSales: SkuSalesSummaryRow[] = parseCsv(skuSalesCsv).map((row) => ({
+  const parseSkuSalesCsv = (csvText: string): SkuSalesSummaryRow[] => parseCsv(csvText).map((row) => ({
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
     sku_id: String(row.sku_id || ""),
@@ -747,6 +810,9 @@ async function loadBundledState() {
     net_gross_sales: asNumber(row.net_gross_sales),
     avg_net_gross_per_unit: asNumber(row.avg_net_gross_per_unit),
   }));
+  const skuSalesPaid = parseSkuSalesCsv(skuSalesCsv);
+  const skuSalesCreated = parseSkuSalesCsv(skuSalesCreatedCsv);
+  const skuSales = orderDateBasis === DATE_BASIS_CREATED && skuSalesCreated.length ? skuSalesCreated : skuSalesPaid;
 
   const inventoryRows: InventoryDoc[] = parseCsv(inventoryCsv).map((row) => ({
     snapshotDate: String(row.date || ""),
@@ -821,7 +887,7 @@ async function loadBundledState() {
     ),
   );
 
-  snapshotStateCache = {
+  const value: SnapshotState = {
     campaigns,
     demand: demand.sort((a, b) => a.date.localeCompare(b.date)),
     samples: samples.sort((a, b) => a.date.localeCompare(b.date)),
@@ -836,7 +902,8 @@ async function loadBundledState() {
     },
   };
 
-  return snapshotStateCache;
+  snapshotStateCache[orderDateBasis] = value;
+  return value;
 }
 
 async function readCollection<T>(name: string) {
@@ -960,7 +1027,7 @@ export async function saveHostedSkuMappingOverrides(rows: unknown, preferredData
 
   if (prefersLocalData(preferredDataSource)) {
     await writeFile(LOCAL_SKU_MAPPING_OVERRIDE_FILE, stringifyEditableSkuMappingCsv(payload), "utf8");
-    snapshotStateCache = null;
+  invalidateHostedPlannerCache();
     return payload;
   }
 
@@ -971,7 +1038,7 @@ export async function saveHostedSkuMappingOverrides(rows: unknown, preferredData
     },
     { merge: true },
   );
-  liveStateCache = null;
+  invalidateHostedPlannerCache();
   return payload;
 }
 
@@ -1057,8 +1124,12 @@ async function writeDemandDocs(collectionName: string, rows: DemandDoc[]) {
   }
 }
 
-async function saveLocalDemandDocs(collectionName: "planningDemandDaily" | "planningSamplesDaily", rows: DemandDoc[], uploadedDates: string[]) {
-  const fileName = collectionName === "planningSamplesDaily" ? "planning_samples_daily.csv" : "planning_demand_daily.csv";
+async function saveLocalDemandDocs(collectionName: typeof DEMAND_COLLECTION_PAID | typeof DEMAND_COLLECTION_CREATED | typeof DEMAND_COLLECTION_SAMPLES, rows: DemandDoc[], uploadedDates: string[]) {
+  const fileName = collectionName === DEMAND_COLLECTION_SAMPLES
+    ? "planning_samples_daily.csv"
+    : collectionName === DEMAND_COLLECTION_CREATED
+      ? "planning_demand_daily_created.csv"
+      : "planning_demand_daily.csv";
   const filePath = path.join(DATA_DIR, fileName);
   const existingText = await readFile(filePath, "utf8").catch(() => "");
   const existingRows: DemandDoc[] = parseCsv(existingText).map((row) => ({
@@ -1086,8 +1157,9 @@ function skuSalesDocId(row: SkuSalesSummaryRow) {
   return Buffer.from(`${row.platform || "TikTok"}__${row.date}__${row.sku_id}__${row.product_name}`, "utf8").toString("base64url");
 }
 
-async function saveLocalSkuSalesDocs(rows: SkuSalesSummaryRow[], uploadedDates: string[]) {
-  const existingText = await readFile(LOCAL_SKU_SALES_FILE, "utf8").catch(() => "");
+async function saveLocalSkuSalesDocs(rows: SkuSalesSummaryRow[], uploadedDates: string[], collectionName: typeof SKU_SALES_COLLECTION_PAID | typeof SKU_SALES_COLLECTION_CREATED = SKU_SALES_COLLECTION_PAID) {
+  const targetFile = collectionName === SKU_SALES_COLLECTION_CREATED ? LOCAL_SKU_SALES_CREATED_FILE : LOCAL_SKU_SALES_FILE;
+  const existingText = await readFile(targetFile, "utf8").catch(() => "");
   const existingRows: SkuSalesSummaryRow[] = parseCsv(existingText).map((row) => ({
     date: String(row.date || ""),
     platform: String(row.platform || "TikTok"),
@@ -1107,18 +1179,18 @@ async function saveLocalSkuSalesDocs(rows: SkuSalesSummaryRow[], uploadedDates: 
     ...rows,
   ].sort((a, b) => a.date.localeCompare(b.date) || a.sku_type.localeCompare(b.sku_type) || a.product_name.localeCompare(b.product_name));
   await writeFile(
-    LOCAL_SKU_SALES_FILE,
+    targetFile,
     toCsv(["date", "platform", "sku_id", "product_name", "sku_type", "core_products", "units_sold", "gross_sales", "avg_gross_per_unit", "net_gross_sales", "avg_net_gross_per_unit"], mergedRows as unknown as Record<string, unknown>[]),
     "utf8",
   );
 }
 
-async function writeSkuSalesDocs(rows: SkuSalesSummaryRow[]) {
+async function writeSkuSalesDocs(rows: SkuSalesSummaryRow[], collectionName: typeof SKU_SALES_COLLECTION_PAID | typeof SKU_SALES_COLLECTION_CREATED = SKU_SALES_COLLECTION_PAID) {
   const db = getFirebaseAdminDb();
   for (const rowChunk of chunkArray(rows, 400)) {
     const batch = db.batch();
     rowChunk.forEach((row) => {
-      const ref = db.collection("planningSkuSalesDaily").doc(skuSalesDocId(row));
+      const ref = db.collection(collectionName).doc(skuSalesDocId(row));
       batch.set(ref, row, { merge: true });
     });
     await batch.commit();
@@ -1142,16 +1214,19 @@ async function writeInventoryDocs(rows: InventoryDoc[]) {
   }
 }
 
-async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
+async function loadLiveState(forceRefresh = false, orderDateBasis: PlannerOrderDateBasis = DATE_BASIS_PAID): Promise<LoadedState> {
   const now = Date.now();
-  if (!forceRefresh && liveStateCache && liveStateCache.expiresAt > now) {
-    return liveStateCache.value;
+  const cacheEntry = liveStateCache[orderDateBasis];
+  if (!forceRefresh && cacheEntry && cacheEntry.expiresAt > now) {
+    return cacheEntry.value;
   }
 
-  const [demand, samples, skuSales, inventory, forecastSettings, plannerSettingsDoc, launchPlansRaw, campaignsRaw, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
-    readCollection<DemandDoc>("planningDemandDaily"),
-    readCollection<DemandDoc>("planningSamplesDaily"),
-    readCollection<SkuSalesSummaryRow>("planningSkuSalesDaily"),
+  const [demandPaid, demandCreated, samples, skuSalesPaid, skuSalesCreated, inventory, forecastSettings, plannerSettingsDoc, launchPlansRaw, campaignsRaw, ordersUploadAudit, samplesUploadAudit] = await Promise.all([
+    readCollection<DemandDoc>(DEMAND_COLLECTION_PAID),
+    readCollection<DemandDoc>(DEMAND_COLLECTION_CREATED),
+    readCollection<DemandDoc>(DEMAND_COLLECTION_SAMPLES),
+    readCollection<SkuSalesSummaryRow>(SKU_SALES_COLLECTION_PAID),
+    readCollection<SkuSalesSummaryRow>(SKU_SALES_COLLECTION_CREATED),
     readCollection<InventoryDoc>("inventorySnapshots"),
     readCollection<ForecastSettingDoc>("forecastSettings"),
     readDoc<PlannerSharedSettings>("planningSettings", "shared"),
@@ -1170,9 +1245,11 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
     ),
   );
   const campaigns = normalizeCampaignEvents(campaignsRaw);
-  const canonicalDemand = demand.map((row) => ({ ...row, product_name: canonicalizeProductName(row.product_name) }));
+  const activeDemandSource = orderDateBasis === DATE_BASIS_CREATED && demandCreated.length ? demandCreated : demandPaid;
+  const activeSkuSalesSource = orderDateBasis === DATE_BASIS_CREATED && skuSalesCreated.length ? skuSalesCreated : skuSalesPaid;
+  const canonicalDemand = activeDemandSource.map((row) => ({ ...row, product_name: canonicalizeProductName(row.product_name) }));
   const canonicalSamples = samples.map((row) => ({ ...row, product_name: canonicalizeProductName(row.product_name) }));
-  const canonicalSkuSales = skuSales.map((row) => ({
+  const canonicalSkuSales = activeSkuSalesSource.map((row) => ({
     ...row,
     product_name: canonicalizeProductName(row.product_name),
     core_products: canonicalizeCoreProducts(row.core_products),
@@ -1199,7 +1276,7 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
     loadedAt: new Date().toISOString(),
   };
 
-  liveStateCache = {
+  liveStateCache[orderDateBasis] = {
     value,
     expiresAt: now + LIVE_CACHE_MS,
   };
@@ -1207,12 +1284,13 @@ async function loadLiveState(forceRefresh = false): Promise<LoadedState> {
   return value;
 }
 
-async function loadState(options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null } = {}): Promise<LoadedState> {
+async function loadState(options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null; orderDateBasis?: PlannerOrderDateBasis } = {}): Promise<LoadedState> {
+  const orderDateBasis = normalizeOrderDateBasis(options.orderDateBasis);
   if (prefersLocalData(options.preferredDataSource)) {
     if (options.forceRefresh) {
-      snapshotStateCache = null;
+      invalidateHostedPlannerCache();
     }
-    const snapshotState = await loadBundledState();
+    const snapshotState = await loadBundledState(orderDateBasis);
     return {
       state: snapshotState,
       source: "local",
@@ -1222,9 +1300,9 @@ async function loadState(options: { forceRefresh?: boolean; preferredDataSource?
   }
 
   try {
-    return await loadLiveState(Boolean(options.forceRefresh));
+    return await loadLiveState(Boolean(options.forceRefresh), orderDateBasis);
   } catch (error) {
-    const snapshotState = await loadBundledState();
+    const snapshotState = await loadBundledState(orderDateBasis);
     return {
       state: snapshotState,
       source: "snapshot",
@@ -1352,6 +1430,7 @@ function buildWorkspace(stateInfo: LoadedState) {
       excludeSpikes: state.plannerSettings.global.viralSmoothingEnabled ?? true,
       upliftPct: defaults[monthKey(horizonStartDate)] ?? 30,
       leadTimeDays: state.plannerSettings.global.defaultLeadTimeDays,
+      orderDateBasis: normalizeOrderDateBasis(state.plannerSettings.global.orderDateBasis),
       safetyRule: `${Math.max(0, asNumber(state.plannerSettings.global.safetyStockWeeksH1))} weeks in Jan-Jun. ${Math.max(
         0,
         asNumber(state.plannerSettings.global.safetyStockWeeksH2),
@@ -1366,8 +1445,26 @@ function buildWorkspace(stateInfo: LoadedState) {
   };
 }
 
-export async function getHostedWorkspace(options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null } = {}) {
-  return buildWorkspace(await loadState(options));
+async function loadStateForRequestedBasis(
+  options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null },
+  requestedBasis?: PlannerOrderDateBasis,
+) {
+  const initialBasis = requestedBasis ? normalizeOrderDateBasis(requestedBasis) : DATE_BASIS_CREATED;
+  let stateInfo = await loadState({ ...options, orderDateBasis: initialBasis });
+  const settingsBasis = normalizeOrderDateBasis(stateInfo.state.plannerSettings.global.orderDateBasis);
+  if (!requestedBasis && settingsBasis !== initialBasis) {
+    stateInfo = await loadState({ ...options, orderDateBasis: settingsBasis });
+  }
+  return stateInfo;
+}
+
+export async function getHostedWorkspace(options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null; orderDateBasis?: PlannerOrderDateBasis } = {}) {
+  return buildWorkspace(
+    await loadStateForRequestedBasis(
+      { forceRefresh: options.forceRefresh, preferredDataSource: options.preferredDataSource },
+      options.orderDateBasis,
+    ),
+  );
 }
 
 function buildHistoricalTrend(productMonthly: Map<string, Map<string, number>>, focusYear: number) {
@@ -1561,8 +1658,11 @@ export async function runHostedPlanning(params: {
   upliftPct?: number;
   planningYear?: number;
   customSettings?: PlannerSharedSettings;
+  orderDateBasis?: PlannerOrderDateBasis;
 }, options: { forceRefresh?: boolean; preferredDataSource?: PlannerDataSourceMode | null } = {}) {
-  const stateInfo = await loadState(options);
+  const orderDateBasis = params.orderDateBasis ? normalizeOrderDateBasis(params.orderDateBasis) : undefined;
+  const stateInfo = await loadStateForRequestedBasis(options, orderDateBasis);
+  const activeBasis = normalizeOrderDateBasis(orderDateBasis || stateInfo.state.plannerSettings.global.orderDateBasis);
   const state = stateInfo.state;
   const workspace = buildWorkspace(stateInfo);
   const baselineStart = params.baselineStart || workspace.defaults.baselineStart;
@@ -1943,6 +2043,7 @@ export async function runHostedPlanning(params: {
 
   return {
     ok: true,
+    orderDateBasis: activeBasis,
     rows,
     summary: {
       rows: rows.length,
@@ -1992,13 +2093,13 @@ export async function saveHostedForecastSetting(
         productLiftOverrides: payload.productLiftOverrides,
       };
       await writeFile(FORECAST_DEFAULTS_FILE, JSON.stringify(filePayload, null, 2), "utf8");
-      snapshotStateCache = null;
+      invalidateHostedPlannerCache();
     } catch {
       // Ignore local snapshot write failures in hosted/serverless environments.
     }
   } else {
     await getFirebaseAdminDb().collection("forecastSettings").doc(monthKeyValue).set(payload, { merge: true });
-    liveStateCache = null;
+    invalidateHostedPlannerCache();
   }
 
   const settings = (await loadState({ forceRefresh: true, preferredDataSource })).state.forecastSettings;
@@ -2020,20 +2121,20 @@ export async function saveHostedPlannerSettings(settings: unknown, preferredData
   if (prefersLocalData(preferredDataSource)) {
     try {
       await writeFile(PLANNER_SETTINGS_FILE, JSON.stringify(payload, null, 2), "utf8");
-      snapshotStateCache = null;
+      invalidateHostedPlannerCache();
     } catch {
       // Ignore local snapshot write failures in hosted/serverless environments.
     }
   } else {
     await getFirebaseAdminDb().collection("planningSettings").doc("shared").set(payload, { merge: true });
-    liveStateCache = null;
+    invalidateHostedPlannerCache();
   }
 
   return payload;
 }
 
 export async function saveHostedDemandUpload(
-  collectionName: "planningDemandDaily" | "planningSamplesDaily",
+  collectionName: typeof DEMAND_COLLECTION_PAID | typeof DEMAND_COLLECTION_SAMPLES,
   rows: UploadedDemandRow[],
   meta: {
     platform?: string;
@@ -2044,33 +2145,46 @@ export async function saveHostedDemandUpload(
   preferredDataSource?: PlannerDataSourceMode | null,
 ) {
   const skuMappings = await loadTikTokSkuMappings(preferredDataSource);
-  const mappedRows = expandMappedDemandRows(rows, skuMappings);
-  const normalizedRows = normalizeUploadedDemandRows(mappedRows);
-  if (!normalizedRows.length) {
+  const isOrdersUpload = collectionName === DEMAND_COLLECTION_PAID;
+  const paidRows = isOrdersUpload ? rowsForDateBasis(rows, DATE_BASIS_PAID) : rows;
+  const createdRows = isOrdersUpload ? rowsForDateBasis(rows, DATE_BASIS_CREATED) : [];
+  const mappedPaidRows = expandMappedDemandRows(paidRows, skuMappings);
+  const normalizedRows = normalizeUploadedDemandRows(mappedPaidRows);
+  const mappedCreatedRows = isOrdersUpload ? expandMappedDemandRows(createdRows, skuMappings) : [];
+  const normalizedCreatedRows = isOrdersUpload ? normalizeUploadedDemandRows(mappedCreatedRows) : [];
+  if (!normalizedRows.length && !normalizedCreatedRows.length) {
     throw new Error("No usable planning rows were found in the uploaded file.");
   }
 
   const uploadedDates = uniqueSorted(normalizedRows.map((row) => row.date));
+  const createdUploadedDates = uniqueSorted(normalizedCreatedRows.map((row) => row.date));
   let skuRowsWritten = 0;
-  const skuSalesRows = collectionName === "planningDemandDaily" ? buildSkuSalesSummaryRows(rows, skuMappings) : [];
+  const skuSalesRows = isOrdersUpload ? buildSkuSalesSummaryRows(paidRows, skuMappings) : [];
+  const skuSalesRowsCreated = isOrdersUpload ? buildSkuSalesSummaryRows(createdRows, skuMappings) : [];
 
   if (prefersLocalData(preferredDataSource)) {
-    await saveLocalDemandDocs(collectionName, normalizedRows, uploadedDates);
+    if (normalizedRows.length) {
+      await saveLocalDemandDocs(collectionName, normalizedRows, uploadedDates);
+    }
+    if (normalizedCreatedRows.length) {
+      await saveLocalDemandDocs(DEMAND_COLLECTION_CREATED, normalizedCreatedRows, createdUploadedDates);
+    }
     if (skuSalesRows.length) {
-      await saveLocalSkuSalesDocs(skuSalesRows, uniqueSorted(skuSalesRows.map((row) => row.date)));
+      await saveLocalSkuSalesDocs(skuSalesRows, uniqueSorted(skuSalesRows.map((row) => row.date)), SKU_SALES_COLLECTION_PAID);
+      await saveLocalSkuSalesDocs(skuSalesRowsCreated, uniqueSorted(skuSalesRowsCreated.map((row) => row.date)), SKU_SALES_COLLECTION_CREATED);
       skuRowsWritten = skuSalesRows.length;
     }
 
     if (meta.writeAudit !== false) {
       // Keep a tiny local "last upload" audit so the UI can show date coverage without touching Firestore.
       try {
-        const uploadType = collectionName === "planningSamplesDaily" ? "samples" : "orders";
+        const uploadType = collectionName === DEMAND_COLLECTION_SAMPLES ? "samples" : "orders";
         const uploadAudit: UploadAuditDoc = {
           uploadType,
-          platform: meta.platform || normalizedRows[0]?.platform || "TikTok",
+          platform: meta.platform || normalizedRows[0]?.platform || normalizedCreatedRows[0]?.platform || "TikTok",
           rawRowCount: asNumber(meta.rawRowCount),
           usableRowCount: asNumber(meta.usableRowCount || rows.length),
-          rowsWritten: normalizedRows.length,
+          rowsWritten: Math.max(normalizedRows.length, normalizedCreatedRows.length),
           uploadedDates,
           firstDate: uploadedDates[0] || null,
           lastDate: uploadedDates.at(-1) || null,
@@ -2083,32 +2197,42 @@ export async function saveHostedDemandUpload(
       }
     }
 
-    snapshotStateCache = null;
+    invalidateHostedPlannerCache();
     return {
       uploadedDates,
       rowsWritten: normalizedRows.length,
       skuRowsWritten,
+      createdRowsWritten: normalizedCreatedRows.length,
       dataSource: "local",
     };
   }
 
-  await deleteDocsByDates(collectionName, "date", uploadedDates);
-  await writeDemandDocs(collectionName, normalizedRows);
+  if (normalizedRows.length) {
+    await deleteDocsByDates(collectionName, "date", uploadedDates);
+    await writeDemandDocs(collectionName, normalizedRows);
+  }
+  if (normalizedCreatedRows.length) {
+    await deleteDocsByDates(DEMAND_COLLECTION_CREATED, "date", createdUploadedDates);
+    await writeDemandDocs(DEMAND_COLLECTION_CREATED, normalizedCreatedRows);
+  }
 
-  if (collectionName === "planningDemandDaily") {
+  if (isOrdersUpload) {
     const skuSalesDates = uniqueSorted(skuSalesRows.map((row) => row.date));
-    await deleteDocsByDates("planningSkuSalesDaily", "date", skuSalesDates);
-    await writeSkuSalesDocs(skuSalesRows);
+    const skuSalesDatesCreated = uniqueSorted(skuSalesRowsCreated.map((row) => row.date));
+    await deleteDocsByDates(SKU_SALES_COLLECTION_PAID, "date", skuSalesDates);
+    await deleteDocsByDates(SKU_SALES_COLLECTION_CREATED, "date", skuSalesDatesCreated);
+    await writeSkuSalesDocs(skuSalesRows, SKU_SALES_COLLECTION_PAID);
+    await writeSkuSalesDocs(skuSalesRowsCreated, SKU_SALES_COLLECTION_CREATED);
     skuRowsWritten = skuSalesRows.length;
   }
 
-  const uploadType = collectionName === "planningSamplesDaily" ? "samples" : "orders";
+  const uploadType = collectionName === DEMAND_COLLECTION_SAMPLES ? "samples" : "orders";
   const uploadAudit: UploadAuditDoc = {
     uploadType,
-    platform: meta.platform || normalizedRows[0]?.platform || "TikTok",
+    platform: meta.platform || normalizedRows[0]?.platform || normalizedCreatedRows[0]?.platform || "TikTok",
     rawRowCount: asNumber(meta.rawRowCount),
     usableRowCount: asNumber(meta.usableRowCount || rows.length),
-    rowsWritten: normalizedRows.length,
+    rowsWritten: Math.max(normalizedRows.length, normalizedCreatedRows.length),
     uploadedDates,
     firstDate: uploadedDates[0] || null,
     lastDate: uploadedDates.at(-1) || null,
@@ -2118,11 +2242,12 @@ export async function saveHostedDemandUpload(
     await getFirebaseAdminDb().collection("planningUploadAudit").doc(uploadType).set(uploadAudit, { merge: true });
   }
 
-  liveStateCache = null;
+  invalidateHostedPlannerCache();
   return {
     uploadedDates,
     rowsWritten: normalizedRows.length,
     skuRowsWritten,
+    createdRowsWritten: normalizedCreatedRows.length,
   };
 }
 
@@ -2155,12 +2280,12 @@ export async function finalizeHostedDemandUploadAudit(args: {
     } catch {
       // ignore
     }
-    snapshotStateCache = null;
+      invalidateHostedPlannerCache();
     return { ok: true, dataSource: "local", uploadAudit };
   }
 
   await getFirebaseAdminDb().collection("planningUploadAudit").doc(args.uploadType).set(uploadAudit, { merge: true });
-  liveStateCache = null;
+  invalidateHostedPlannerCache();
   return { ok: true, dataSource: "live", uploadAudit };
 }
 
@@ -2173,7 +2298,7 @@ export async function syncHostedInventorySnapshot(preferredDataSource?: PlannerD
   await deleteDocsByDates("inventorySnapshots", "snapshotDate", [snapshot.snapshotDate]);
   await writeInventoryDocs(snapshot.rows);
 
-  liveStateCache = null;
+  invalidateHostedPlannerCache();
 
   return {
     snapshotDate: snapshot.snapshotDate,

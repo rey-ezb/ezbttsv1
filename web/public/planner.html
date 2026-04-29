@@ -144,6 +144,12 @@
                       <option value="sales_plus_samples">Sales + samples</option>
                     </select>
                   </label>
+                  <label>Date basis for sales
+                    <select id="order-date-basis" name="orderDateBasis">
+                      <option value="created_time">Created time</option>
+                      <option value="paid_time">Paid time</option>
+                    </select>
+                  </label>
                   <label>Reorder lead time (days)<input type="number" id="lead-time-days" name="leadTimeDays" value="8"></label>
                   <label class="checkbox-label">
                     <input type="checkbox" id="exclude-spikes" name="excludeSpikes" checked>
