@@ -3756,11 +3756,14 @@ function renderLaunchPlanning(payload) {
 }
 
 function formatMetric(value, format = "text") {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  if (value === null || value === undefined) return "—";
   if (format === "money") return money(value);
   if (format === "percent") return percent(value);
   if (format === "integer") return integer(value);
-  if (format === "number") return number(value);
+  if (format === "number") {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? number(numeric) : "—";
+  }
   return value || "—";
 }
 
