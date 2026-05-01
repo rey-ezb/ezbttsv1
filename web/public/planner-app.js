@@ -1171,13 +1171,11 @@ function hideFloatingHelpTooltip() {
 
 async function syncHostedKpiAvailability() {
   if (!hostedKpiButton || !pages.kpis) return;
-  const unavailable = true;
-  // Keep the nav item visible as "Coming soon" without enabling the page.
+  const unavailable = false;
   hostedKpiButton.hidden = false;
   hostedKpiButton.dataset.disabled = unavailable ? "true" : "false";
   hostedKpiButton.setAttribute("aria-disabled", unavailable ? "true" : "false");
-  pages.kpis.hidden = true;
-  if (activePage === "kpis") setActivePage("planning");
+  pages.kpis.hidden = false;
 }
 
 function setStatus(message, isError = false) {
