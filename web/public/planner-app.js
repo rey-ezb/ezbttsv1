@@ -3969,8 +3969,15 @@ function buildCohortHeatmap(rows) {
             <tr>
               <td>${row.cohort || "—"}</td>
               ${monthKeys.map((key) => {
-                const value = Number(row[key] || 0);
-                return `<td class="heat-cell" style="--heat:${Math.min(value, 1)}">${percent(value)}</td>`;
+                const raw = row[key];
+                if (raw === null || raw === undefined || raw === "") {
+                  return '<td class="heat-cell" style="--heat:0">—</td>';
+                }
+                const value = Number(raw);
+                if (!Number.isFinite(value)) {
+                  return '<td class="heat-cell" style="--heat:0">—</td>';
+                }
+                return `<td class="heat-cell" style="--heat:${Math.min(Math.max(value, 0), 1)}">${percent(value)}</td>`;
               }).join("")}
             </tr>
           `).join("")}

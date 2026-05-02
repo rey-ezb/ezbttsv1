@@ -88,6 +88,36 @@ function roundCurrency(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 }
 
+function encodeVarintDeltas(values) {
+  if (!Array.isArray(values) || !values.length) return "";
+  const bytes = [];
+  let previous = 0;
+  values.forEach((raw, index) => {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return;
+    const current = value < 0 ? 0 : Math.floor(value);
+    const delta = index === 0 ? current : Math.max(0, current - previous);
+    previous = current;
+    let num = delta;
+    while (num >= 0x80) {
+      bytes.push((num & 0x7f) | 0x80);
+      num >>>= 7;
+    }
+    bytes.push(num & 0x7f);
+  });
+  return Buffer.from(bytes).toString("base64url");
+}
+
+function encodeUint16(values) {
+  if (!Array.isArray(values) || !values.length) return "";
+  const arr = new Uint16Array(values.length);
+  values.forEach((value, index) => {
+    const numeric = Number(value);
+    arr[index] = Number.isFinite(numeric) && numeric >= 0 ? Math.min(65535, Math.floor(numeric)) : 65535;
+  });
+  return Buffer.from(arr.buffer).toString("base64url");
+}
+
 function parseDate(value) {
   const raw = clean(value);
   if (!raw) return null;
@@ -274,12 +304,13 @@ function cohortRowsFromMonthlySets(monthlySets) {
   const months = Array.from(monthlySets.keys()).sort();
   if (!months.length) return [];
   const rows = [];
-  for (let index = Math.max(0, months.length - 8); index < months.length; index += 1) {
+  for (let index = 0; index < months.length; index += 1) {
     const cohortMonth = months[index];
     const cohortSet = monthlySets.get(cohortMonth) || new Set();
     if (!cohortSet.size) continue;
     const row = { cohort: cohortMonth };
-    for (let offset = 0; offset <= 5; offset += 1) {
+    const maxOffset = months.length - index - 1;
+    for (let offset = 0; offset <= maxOffset; offset += 1) {
       const comparisonMonth = months[index + offset];
       if (!comparisonMonth) break;
       const comparisonSet = monthlySets.get(comparisonMonth) || new Set();
@@ -573,6 +604,7 @@ async function main() {
         returned_units: 0,
         delivered_orders: 0,
         canceled_orders: 0,
+        blank_customer_orders: 0,
         status_counts: {},
       };
       daily.gross_product_sales = roundCurrency(daily.gross_product_sales + fact.gross_product_sales);
@@ -584,6 +616,7 @@ async function main() {
       daily.returned_units += fact.returned_units;
       daily.delivered_orders += fact.delivered ? 1 : 0;
       daily.canceled_orders += fact.valid_order ? 0 : 1;
+      daily.blank_customer_orders += fact.customer_id === null || fact.customer_id === undefined ? 1 : 0;
       for (const [label, count] of fact.status_counts.entries()) {
         daily.status_counts[label] = (daily.status_counts[label] || 0) + count;
       }
@@ -602,6 +635,7 @@ async function main() {
         returned_units: 0,
         delivered_orders: 0,
         canceled_orders: 0,
+        blank_customer_orders: 0,
         status_counts: {},
       };
       let dayNew = 0;
@@ -642,6 +676,22 @@ async function main() {
       80,
     );
 
+    const indexDates = Array.from(dailyRowsMap.keys()).sort();
+    const dateOrdinalMap = new Map(indexDates.map((date, index) => [date, index]));
+    const dayCustomerIds = {};
+    indexDates.forEach((date) => {
+      const ids = Array.from((state.dailyCustomerSets.get(date) || new Set()).values()).sort((a, b) => a - b);
+      dayCustomerIds[date] = encodeVarintDeltas(ids);
+    });
+    const customerCount = customerKeyById.length;
+    const firstSeenOrdinal = new Array(customerCount).fill(65535);
+    state.customerFirstSeen.forEach((date, customerId) => {
+      const ordinal = dateOrdinalMap.get(date);
+      if (ordinal === undefined) return;
+      if (customerId < 0 || customerId >= customerCount) return;
+      firstSeenOrdinal[customerId] = ordinal;
+    });
+
     outputBuckets[bucketName] = {
       coverage: {
         start_date: Array.from(dailyRowsMap.keys()).sort()[0] || null,
@@ -652,6 +702,12 @@ async function main() {
       cities: cityRows,
       zips: zipRows,
       cohort_rows: cohortRowsFromMonthlySets(state.monthlyCustomerSets),
+      customer_index: {
+        dates: indexDates,
+        day_customer_ids: dayCustomerIds,
+        first_seen_ordinal: encodeUint16(firstSeenOrdinal),
+        customer_count: customerCount,
+      },
     };
   }
 

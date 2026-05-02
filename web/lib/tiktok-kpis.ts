@@ -12,6 +12,7 @@ type DailyRow = {
   returned_units: number;
   delivered_orders: number;
   canceled_orders: number;
+  blank_customer_orders?: number;
   status_counts: Record<string, number>;
   unique_customers?: number;
   new_customers?: number;
@@ -46,6 +47,12 @@ type BucketCache = {
   cities: CityZipRow[];
   zips: CityZipRow[];
   cohort_rows?: Array<Record<string, string | number>>;
+  customer_index?: {
+    dates: string[];
+    day_customer_ids: Record<string, string>;
+    first_seen_ordinal: string;
+    customer_count: number;
+  };
 };
 
 type CacheFile = {
@@ -76,6 +83,35 @@ function safeNumber(value: unknown) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function decodeVarintDeltas(base64Value: string) {
+  if (!base64Value) return [];
+  const buffer = Buffer.from(String(base64Value), "base64url");
+  const values: number[] = [];
+  let index = 0;
+  let previous = 0;
+  while (index < buffer.length) {
+    let shift = 0;
+    let value = 0;
+    while (index < buffer.length) {
+      const byte = buffer[index];
+      index += 1;
+      value |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    previous += value;
+    values.push(previous);
+  }
+  return values;
+}
+
+function decodeUint16(base64Value: string) {
+  if (!base64Value) return new Uint16Array(0);
+  const buffer = Buffer.from(String(base64Value), "base64url");
+  const length = Math.floor(buffer.length / 2);
+  return new Uint16Array(buffer.buffer, buffer.byteOffset, length);
+}
+
 function asDate(value: string | null | undefined) {
   if (!value) return null;
   const normalized = String(value).slice(0, 10);
@@ -94,6 +130,68 @@ function monthOverlapsRange(month: string, startDate: string | null, endDate: st
   const monthEnd = `${key}-31`;
   if (!startDate || !endDate) return true;
   return monthEnd >= startDate && monthStart <= endDate;
+}
+
+function addMonths(month: string, offset: number) {
+  const [yearRaw, monthRaw] = String(month || "").split("-");
+  const year = Number(yearRaw);
+  const monthNumber = Number(monthRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(monthNumber) || monthNumber < 1 || monthNumber > 12) return null;
+  const base = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return `${base.getUTCFullYear()}-${String(base.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthsBetweenInclusive(startMonth: string | null, endMonth: string | null) {
+  if (!startMonth || !endMonth) return null;
+  const [syRaw, smRaw] = startMonth.split("-");
+  const [eyRaw, emRaw] = endMonth.split("-");
+  const sy = Number(syRaw);
+  const sm = Number(smRaw);
+  const ey = Number(eyRaw);
+  const em = Number(emRaw);
+  if (![sy, sm, ey, em].every((value) => Number.isFinite(value))) return null;
+  const diff = ((ey - sy) * 12) + (em - sm);
+  if (diff < 0) return null;
+  return diff;
+}
+
+function filterCohortRowsByRange(
+  rows: Array<Record<string, string | number>>,
+  startDate: string | null,
+  endDate: string | null,
+) {
+  if (!rows.length) return [];
+  const startMonth = startDate ? startDate.slice(0, 7) : null;
+  const endMonth = endDate ? endDate.slice(0, 7) : null;
+  const selectedWindowMaxOffset = monthsBetweenInclusive(startMonth, endMonth);
+  return rows
+    .filter((row) => {
+      const cohort = String(row.cohort || "");
+      if (!cohort) return false;
+      if (startMonth && cohort < startMonth) return false;
+      if (endMonth && cohort > endMonth) return false;
+      return true;
+    })
+    .map((row) => {
+      const next: Record<string, string | number | null> = { ...row };
+      const maxExistingOffset = Object.keys(row)
+        .filter((key) => key.startsWith("m"))
+        .map((key) => Number(key.slice(1)))
+        .filter((value) => Number.isFinite(value))
+        .reduce((acc, value) => Math.max(acc, value), 0);
+      const maxOffset = selectedWindowMaxOffset === null
+        ? maxExistingOffset
+        : Math.max(maxExistingOffset, selectedWindowMaxOffset);
+      for (let offset = 0; offset <= maxOffset; offset += 1) {
+        const key = `m${offset}`;
+        if (!(key in next)) next[key] = null;
+        if (!endMonth) continue;
+        const month = addMonths(String(row.cohort || ""), offset);
+        if (!month) continue;
+        if (month > endMonth) next[key] = null;
+      }
+      return next;
+    });
 }
 
 function sortByValueDesc<T extends Record<string, unknown>>(rows: T[], key: keyof T) {
@@ -131,6 +229,26 @@ async function loadKpiCache() {
   return cachePromise;
 }
 
+type DecodedCustomerIndex = {
+  dates: string[];
+  firstSeenOrdinal: Uint16Array;
+  decodedDayIds: Map<string, number[]>;
+};
+
+function getDecodedCustomerIndex(bucket: BucketCache): DecodedCustomerIndex | null {
+  const index = bucket.customer_index;
+  if (!index?.dates?.length) return null;
+  const existing = (bucket as unknown as { __decoded_customer_index?: DecodedCustomerIndex }).__decoded_customer_index;
+  if (existing) return existing;
+  const decoded: DecodedCustomerIndex = {
+    dates: index.dates,
+    firstSeenOrdinal: decodeUint16(index.first_seen_ordinal),
+    decodedDayIds: new Map(),
+  };
+  (bucket as unknown as { __decoded_customer_index?: DecodedCustomerIndex }).__decoded_customer_index = decoded;
+  return decoded;
+}
+
 export async function buildTiktokKpiPayload(args: QueryArgs) {
   const cache = await loadKpiCache();
   const activeTab = String(args.activeTab || "orders").trim() || "orders";
@@ -151,6 +269,39 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
   const filteredCities = (bucket.cities || []).filter((row) => monthOverlapsRange(row.reporting_month, range.startDate, range.endDate));
   const filteredZips = (bucket.zips || []).filter((row) => monthOverlapsRange(row.reporting_month, range.startDate, range.endDate));
 
+  // Exact distinct-customer logic across the full selected range (no per-day double counting).
+  const decodedIndex = getDecodedCustomerIndex(bucket);
+  const uniqueCustomerIds = new Set<number>();
+  let uniqueCustomers = 0;
+  let newCustomers = 0;
+  let repeatCustomers = 0;
+  if (decodedIndex && range.startDate && range.endDate) {
+    const startOrdinal = decodedIndex.dates.findIndex((date) => date >= range.startDate!);
+    const endOrdinal = (() => {
+      for (let index = decodedIndex.dates.length - 1; index >= 0; index -= 1) {
+        if (decodedIndex.dates[index] <= range.endDate!) return index;
+      }
+      return -1;
+    })();
+    if (startOrdinal >= 0 && endOrdinal >= startOrdinal) {
+      for (let ordinal = startOrdinal; ordinal <= endOrdinal; ordinal += 1) {
+        const date = decodedIndex.dates[ordinal];
+        let ids = decodedIndex.decodedDayIds.get(date);
+        if (!ids) {
+          ids = decodeVarintDeltas(bucket.customer_index?.day_customer_ids?.[date] || "");
+          decodedIndex.decodedDayIds.set(date, ids);
+        }
+        ids.forEach((id) => uniqueCustomerIds.add(id));
+      }
+      uniqueCustomers = uniqueCustomerIds.size;
+      uniqueCustomerIds.forEach((id) => {
+        const firstSeen = decodedIndex.firstSeenOrdinal[id] ?? 65535;
+        if (firstSeen >= startOrdinal && firstSeen <= endOrdinal) newCustomers += 1;
+        else if (firstSeen < startOrdinal) repeatCustomers += 1;
+      });
+    }
+  }
+
   const grossProductSales = sum(filteredDaily, (row) => row.gross_product_sales);
   const netProductSales = sum(filteredDaily, (row) => row.net_product_sales);
   const paidOrders = sum(filteredDaily, (row) => row.paid_orders);
@@ -160,9 +311,11 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
   const returnedUnits = sum(filteredDaily, (row) => row.returned_units);
   const deliveredOrders = sum(filteredDaily, (row) => row.delivered_orders);
   const canceledOrders = sum(filteredDaily, (row) => row.canceled_orders);
-  const uniqueCustomers = sum(filteredDaily, (row) => row.unique_customers || 0);
-  const newCustomers = sum(filteredDaily, (row) => row.new_customers || 0);
-  const repeatCustomers = sum(filteredDaily, (row) => row.repeat_customers || 0);
+  if (!decodedIndex || !range.startDate || !range.endDate) {
+    uniqueCustomers = sum(filteredDaily, (row) => row.unique_customers || 0);
+    newCustomers = sum(filteredDaily, (row) => row.new_customers || 0);
+    repeatCustomers = sum(filteredDaily, (row) => row.repeat_customers || 0);
+  }
   const repeatCustomerRate = uniqueCustomers > 0 ? repeatCustomers / uniqueCustomers : 0;
   const aov = paidOrders > 0 ? grossProductSales / paidOrders : 0;
   const unitsPerPaidOrder = paidOrders > 0 ? unitsSold / paidOrders : 0;
@@ -249,7 +402,11 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
     };
   });
 
-  const cohortRows = (bucket.cohort_rows || []) as Array<Record<string, string | number>>;
+  const cohortRows = filterCohortRowsByRange(
+    (bucket.cohort_rows || []) as Array<Record<string, string | number>>,
+    range.startDate,
+    range.endDate,
+  );
   const highlightedCity = cityRows[0];
 
   const tabs = {
@@ -355,7 +512,7 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
       dataQuality: {
         rows_loaded: cache.source.usable_rows,
         orders_loaded: paidOrders,
-        blank_customer_rows: Math.max(0, paidOrders - Math.min(uniqueCustomers, paidOrders)),
+        blank_customer_rows: sum(filteredDaily, (row) => row.blank_customer_orders || 0),
         rows_without_city: filteredCities.filter((row) => !String(row.city || "").trim()).length,
         rows_without_zip: filteredZips.filter((row) => !String(row.zipcode || "").trim()).length,
         canceled_rows: canceledOrders,
@@ -363,7 +520,7 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
       reportHighlights: [
         `Coverage: ${bucket.coverage.start_date || "n/a"} to ${bucket.coverage.end_date || "n/a"}.`,
         `Order bucket: ${orderBucket}.`,
-        "Unique/repeat customers are rolled up from daily aggregates to keep the cache lean.",
+        "Unique/new/repeat customers use exact distinct counts via a compressed customer index.",
         "Finance tab is order-export based (statement-ledger fields are not loaded in this lean cache).",
       ],
       kpiRows: [
