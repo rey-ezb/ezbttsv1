@@ -1,7 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { getFirebaseAdminDb } from "@/lib/firebase-admin";
+import type { PlannerDataSourceMode } from "@/lib/data-source-mode";
+import { getPlannerDataSourceMode, resolvePlannerDataSourceMode } from "@/lib/data-source-mode";
 
-type DailyRow = {
+export type DailyRow = {
   reporting_date: string;
   gross_product_sales: number;
   net_product_sales: number;
@@ -19,7 +22,7 @@ type DailyRow = {
   repeat_customers?: number;
 };
 
-type ProductRow = {
+export type ProductRow = {
   reporting_month: string;
   product_name: string;
   units_sold: number;
@@ -28,7 +31,7 @@ type ProductRow = {
   unit_cogs: number;
 };
 
-type CityZipRow = {
+export type CityZipRow = {
   reporting_month: string;
   city?: string;
   state?: string;
@@ -37,7 +40,7 @@ type CityZipRow = {
   unique_customers: number;
 };
 
-type BucketCache = {
+export type BucketCache = {
   coverage: {
     start_date: string | null;
     end_date: string | null;
@@ -55,7 +58,7 @@ type BucketCache = {
   };
 };
 
-type CacheFile = {
+export type CacheFile = {
   generated_at: string;
   source: {
     files: number;
@@ -73,10 +76,15 @@ type QueryArgs = {
   dateBasis?: string | null;
   orderBucket?: string | null;
   sources?: string[];
+  preferredDataSource?: PlannerDataSourceMode | null;
 };
 
 const KPI_CACHE_PATH = path.join(process.cwd(), "data", "tiktok_kpi_cache.json");
 let cachePromise: Promise<CacheFile> | null = null;
+const FIRESTORE_KPI_CACHE_COLLECTION = "planningTiktokKpiCache";
+const FIRESTORE_KPI_CACHE_META_DOC = "current";
+const FIRESTORE_KPI_CACHE_CHUNK_PREFIX = "chunk_";
+const FIRESTORE_KPI_CACHE_CHUNK_SIZE = 900_000;
 
 function safeNumber(value: unknown) {
   const numeric = Number(value ?? 0);
@@ -216,15 +224,128 @@ function inRange(date: string, startDate: string | null, endDate: string | null)
   return date >= startDate && date <= endDate;
 }
 
-async function loadKpiCache() {
-  if (!cachePromise) {
-    cachePromise = readFile(KPI_CACHE_PATH, "utf8")
-      .then((text) => JSON.parse(text) as CacheFile)
-      .catch((error) => {
-        throw new Error(
-          `TikTok KPI cache was not found at ${KPI_CACHE_PATH}. Run web/scripts/build-tiktok-kpi-cache.js first. (${error instanceof Error ? error.message : "unknown error"})`,
-        );
+function fallbackEmptyCache(): CacheFile {
+  return {
+    generated_at: new Date().toISOString(),
+    source: {
+      files: 0,
+      raw_rows: 0,
+      usable_rows: 0,
+      unique_customers: 0,
+    },
+    buckets: {
+      paid_time: { coverage: { start_date: null, end_date: null }, daily: [], products: [], cities: [], zips: [], cohort_rows: [] },
+      created_time: { coverage: { start_date: null, end_date: null }, daily: [], products: [], cities: [], zips: [], cohort_rows: [] },
+      file_month: { coverage: { start_date: null, end_date: null }, daily: [], products: [], cities: [], zips: [], cohort_rows: [] },
+    },
+  };
+}
+
+function splitIntoChunks(text: string, chunkSize = FIRESTORE_KPI_CACHE_CHUNK_SIZE) {
+  const output: string[] = [];
+  for (let index = 0; index < text.length; index += chunkSize) {
+    output.push(text.slice(index, index + chunkSize));
+  }
+  return output;
+}
+
+function chunkDocId(index: number) {
+  return `${FIRESTORE_KPI_CACHE_CHUNK_PREFIX}${String(index).padStart(4, "0")}`;
+}
+
+async function loadKpiCacheFromFile() {
+  return readFile(KPI_CACHE_PATH, "utf8")
+    .then((text) => JSON.parse(text) as CacheFile)
+    .catch((error) => {
+      throw new Error(
+        `TikTok KPI cache was not found at ${KPI_CACHE_PATH}. Run web/scripts/build-tiktok-kpi-cache.js first. (${error instanceof Error ? error.message : "unknown error"})`,
+      );
+    });
+}
+
+async function loadKpiCacheFromFirestore() {
+  const db = getFirebaseAdminDb();
+  const collection = db.collection(FIRESTORE_KPI_CACHE_COLLECTION);
+  const metaSnapshot = await collection.doc(FIRESTORE_KPI_CACHE_META_DOC).get();
+  if (!metaSnapshot.exists) return null;
+  const chunkCount = Math.max(0, Number(metaSnapshot.get("chunk_count") || 0));
+  if (!chunkCount) return null;
+
+  const chunkIds = Array.from({ length: chunkCount }, (_, index) => chunkDocId(index));
+  const chunkDocs = await Promise.all(chunkIds.map((id) => collection.doc(id).get()));
+  const text = chunkDocs.map((snapshot) => String(snapshot.get("data") || "")).join("");
+  if (!text.trim()) return null;
+  return JSON.parse(text) as CacheFile;
+}
+
+export async function persistKpiCache(cache: CacheFile, preferredDataSource?: PlannerDataSourceMode | null) {
+  const resolved = resolvePlannerDataSourceMode(preferredDataSource);
+  if (resolved === "local") {
+    await writeFile(KPI_CACHE_PATH, JSON.stringify(cache), "utf8");
+    cachePromise = Promise.resolve(cache);
+    return { ok: true, dataSource: "local" as const };
+  }
+
+  const db = getFirebaseAdminDb();
+  const collection = db.collection(FIRESTORE_KPI_CACHE_COLLECTION);
+  const text = JSON.stringify(cache);
+  const chunks = splitIntoChunks(text);
+  const previousMeta = await collection.doc(FIRESTORE_KPI_CACHE_META_DOC).get().catch(() => null);
+  const previousCount = previousMeta?.exists ? Math.max(0, Number(previousMeta.get("chunk_count") || 0)) : 0;
+
+  for (let start = 0; start < chunks.length; start += 400) {
+    const batch = db.batch();
+    const slice = chunks.slice(start, start + 400);
+    slice.forEach((data, offset) => {
+      const chunkIndex = start + offset;
+      batch.set(collection.doc(chunkDocId(chunkIndex)), {
+        index: chunkIndex,
+        data,
+        updated_at: new Date().toISOString(),
       });
+    });
+    await batch.commit();
+  }
+
+  if (previousCount > chunks.length) {
+    for (let start = chunks.length; start < previousCount; start += 400) {
+      const batch = db.batch();
+      const end = Math.min(previousCount, start + 400);
+      for (let index = start; index < end; index += 1) {
+        batch.delete(collection.doc(chunkDocId(index)));
+      }
+      await batch.commit();
+    }
+  }
+
+  await collection.doc(FIRESTORE_KPI_CACHE_META_DOC).set({
+    chunk_count: chunks.length,
+    generated_at: cache.generated_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }, { merge: true });
+
+  cachePromise = Promise.resolve(cache);
+  return { ok: true, dataSource: "live" as const };
+}
+
+export function invalidateKpiCacheMemory() {
+  cachePromise = null;
+}
+
+async function loadKpiCache(preferredDataSource?: PlannerDataSourceMode | null) {
+  if (!cachePromise) {
+    cachePromise = (async () => {
+      const resolved = resolvePlannerDataSourceMode(preferredDataSource || getPlannerDataSourceMode());
+      if (resolved === "live") {
+        const liveCache = await loadKpiCacheFromFirestore().catch(() => null);
+        if (liveCache) return liveCache;
+      }
+      try {
+        return await loadKpiCacheFromFile();
+      } catch {
+        return fallbackEmptyCache();
+      }
+    })();
   }
   return cachePromise;
 }
@@ -234,6 +355,93 @@ type DecodedCustomerIndex = {
   firstSeenOrdinal: Uint16Array;
   decodedDayIds: Map<string, number[]>;
 };
+
+type BucketDelta = {
+  daily?: DailyRow[];
+  products?: ProductRow[];
+  cities?: CityZipRow[];
+  zips?: CityZipRow[];
+};
+
+type KpiCacheDelta = {
+  generated_at?: string;
+  source?: Partial<CacheFile["source"]>;
+  buckets?: Record<string, BucketDelta>;
+};
+
+function mergeRowsByKey<T>(existingRows: T[], deltaRows: T[], keyFor: (row: T) => string) {
+  const merged = new Map<string, T>();
+  existingRows.forEach((row) => merged.set(keyFor(row), row));
+  deltaRows.forEach((row) => merged.set(keyFor(row), row));
+  return Array.from(merged.values());
+}
+
+function mergeBucketCache(existingBucket: BucketCache | null | undefined, deltaBucket: BucketDelta | null | undefined): BucketCache {
+  const base: BucketCache = existingBucket || {
+    coverage: { start_date: null, end_date: null },
+    daily: [],
+    products: [],
+    cities: [],
+    zips: [],
+    cohort_rows: [],
+  };
+  if (!deltaBucket) return base;
+
+  const daily = mergeRowsByKey(base.daily || [], deltaBucket.daily || [], (row) => row.reporting_date)
+    .sort((a, b) => a.reporting_date.localeCompare(b.reporting_date));
+  const products = mergeRowsByKey(base.products || [], deltaBucket.products || [], (row) => `${row.reporting_month}__${row.product_name}`)
+    .sort((a, b) => a.reporting_month.localeCompare(b.reporting_month) || a.product_name.localeCompare(b.product_name));
+  const cities = mergeRowsByKey(base.cities || [], deltaBucket.cities || [], (row) => `${row.reporting_month}__${String(row.city || "").toLowerCase()}__${String(row.state || "").toLowerCase()}`)
+    .sort((a, b) => a.reporting_month.localeCompare(b.reporting_month) || String(a.city || "").localeCompare(String(b.city || "")));
+  const zips = mergeRowsByKey(base.zips || [], deltaBucket.zips || [], (row) => `${row.reporting_month}__${String(row.zipcode || "")}`)
+    .sort((a, b) => a.reporting_month.localeCompare(b.reporting_month) || String(a.zipcode || "").localeCompare(String(b.zipcode || "")));
+
+  const coverageStart = daily[0]?.reporting_date || null;
+  const coverageEnd = daily.length ? daily[daily.length - 1].reporting_date : null;
+
+  return {
+    ...base,
+    coverage: {
+      start_date: coverageStart,
+      end_date: coverageEnd,
+    },
+    daily,
+    products,
+    cities,
+    zips,
+  };
+}
+
+export async function mergeAndPersistKpiCacheDelta(delta: KpiCacheDelta, preferredDataSource?: PlannerDataSourceMode | null) {
+  const existing = await loadKpiCache(preferredDataSource);
+  const merged: CacheFile = {
+    generated_at: delta.generated_at || new Date().toISOString(),
+    source: {
+      files: Math.max(0, safeNumber(delta.source?.files ?? existing.source?.files ?? 0)),
+      raw_rows: Math.max(0, safeNumber(delta.source?.raw_rows ?? existing.source?.raw_rows ?? 0)),
+      usable_rows: Math.max(0, safeNumber(delta.source?.usable_rows ?? existing.source?.usable_rows ?? 0)),
+      unique_customers: Math.max(0, safeNumber(delta.source?.unique_customers ?? existing.source?.unique_customers ?? 0)),
+    },
+    buckets: {
+      ...existing.buckets,
+    },
+  };
+
+  const bucketNames = new Set<string>([
+    ...Object.keys(existing.buckets || {}),
+    ...Object.keys(delta.buckets || {}),
+    "paid_time",
+    "created_time",
+    "file_month",
+  ]);
+
+  bucketNames.forEach((bucketName) => {
+    merged.buckets[bucketName] = mergeBucketCache(existing.buckets?.[bucketName], delta.buckets?.[bucketName]);
+  });
+
+  await persistKpiCache(merged, preferredDataSource);
+  return { ok: true, cache: merged };
+}
 
 function getDecodedCustomerIndex(bucket: BucketCache): DecodedCustomerIndex | null {
   const index = bucket.customer_index;
@@ -250,7 +458,7 @@ function getDecodedCustomerIndex(bucket: BucketCache): DecodedCustomerIndex | nu
 }
 
 export async function buildTiktokKpiPayload(args: QueryArgs) {
-  const cache = await loadKpiCache();
+  const cache = await loadKpiCache(args.preferredDataSource);
   const activeTab = String(args.activeTab || "orders").trim() || "orders";
   const selectedSources = parseSources(args.sources || []);
   const orderBucketRaw = String(args.orderBucket || "paid_time").trim().toLowerCase();
@@ -275,6 +483,7 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
   let uniqueCustomers = 0;
   let newCustomers = 0;
   let repeatCustomers = 0;
+  let usedExactCustomerIndex = false;
   if (decodedIndex && range.startDate && range.endDate) {
     const startOrdinal = decodedIndex.dates.findIndex((date) => date >= range.startDate!);
     const endOrdinal = (() => {
@@ -283,7 +492,10 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
       }
       return -1;
     })();
-    if (startOrdinal >= 0 && endOrdinal >= startOrdinal) {
+    const indexStartDate = decodedIndex.dates[0] || null;
+    const indexEndDate = decodedIndex.dates.at(-1) || null;
+    const fullyCovered = Boolean(indexStartDate && indexEndDate && range.startDate >= indexStartDate && range.endDate <= indexEndDate);
+    if (fullyCovered && startOrdinal >= 0 && endOrdinal >= startOrdinal) {
       for (let ordinal = startOrdinal; ordinal <= endOrdinal; ordinal += 1) {
         const date = decodedIndex.dates[ordinal];
         let ids = decodedIndex.decodedDayIds.get(date);
@@ -299,6 +511,7 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
         if (firstSeen >= startOrdinal && firstSeen <= endOrdinal) newCustomers += 1;
         else if (firstSeen < startOrdinal) repeatCustomers += 1;
       });
+      usedExactCustomerIndex = true;
     }
   }
 
@@ -311,7 +524,7 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
   const returnedUnits = sum(filteredDaily, (row) => row.returned_units);
   const deliveredOrders = sum(filteredDaily, (row) => row.delivered_orders);
   const canceledOrders = sum(filteredDaily, (row) => row.canceled_orders);
-  if (!decodedIndex || !range.startDate || !range.endDate) {
+  if (!usedExactCustomerIndex || !range.startDate || !range.endDate) {
     uniqueCustomers = sum(filteredDaily, (row) => row.unique_customers || 0);
     newCustomers = sum(filteredDaily, (row) => row.new_customers || 0);
     repeatCustomers = sum(filteredDaily, (row) => row.repeat_customers || 0);

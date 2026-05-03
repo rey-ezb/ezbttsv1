@@ -894,9 +894,29 @@ function normalizeUploadRows(rawRows, platform) {
   const returnedQuantityCol = pickUploadColumn(columns, ["Sku Quantity of return", "SKU Quantity of return"], [["return", "quantity"]]);
   const grossSalesCol = pickUploadColumn(columns, ["SKU Subtotal Before Discount"], [["sku", "subtotal", "before", "discount"]]);
   const sellerDiscountCol = pickUploadColumn(columns, ["SKU Seller Discount"], [["sku", "seller", "discount"], ["seller", "discount"]]);
+  const orderRefundAmountCol = pickUploadColumn(columns, ["Order Refund Amount"], [["order", "refund", "amount"]]);
   const paidTimeCol = pickUploadColumn(columns, ["Paid Time"], [["paid", "time"]]);
   const createdTimeCol = pickUploadColumn(columns, ["Created Time"], [["created", "time"]]);
   const cancelledTimeCol = pickUploadColumn(columns, ["Cancelled Time", "Canceled Time"], [["cancelled", "time"], ["canceled", "time"]]);
+  const deliveredTimeCol = pickUploadColumn(columns, ["Delivered Time"], [["delivered", "time"]]);
+  const buyerUsernameCol = pickUploadColumn(columns, ["Buyer Username"], [["buyer", "username"]]);
+  const buyerNicknameCol = pickUploadColumn(columns, ["Buyer Nickname"], [["buyer", "nickname"]]);
+  const recipientCol = pickUploadColumn(columns, ["Recipient"], [["recipient"]]);
+  const cityCol = pickUploadColumn(columns, ["City"], [["city"]]);
+  const stateCol = pickUploadColumn(columns, ["State"], [["state"]]);
+  const zipCol = pickUploadColumn(columns, ["Zipcode", "Zip Code"], [["zip"]]);
+
+  const statusLabel = (statusText) => {
+    const key = cleanUploadText(statusText).toLowerCase();
+    if (!key) return "Unknown";
+    if (key.includes("cancel")) return "Cancelled";
+    if (key.includes("deliver")) return "Delivered";
+    if (key.includes("return")) return "Returned";
+    if (key.includes("ship")) return "To ship";
+    return cleanUploadText(statusText) || "Unknown";
+  };
+
+  const normalizeZip = (value) => cleanUploadText(value).replace(/\D+/g, "").slice(0, 5);
 
   return rawRows.map((row) => {
     const orderStatus = cleanUploadText(row[orderStatusCol]);
@@ -907,11 +927,15 @@ function normalizeUploadRows(rawRows, platform) {
     const returnedQuantity = parseUploadNumber(row[returnedQuantityCol]);
     const grossSales = parseUploadNumber(row[grossSalesCol]);
     const sellerDiscount = parseUploadNumber(sellerDiscountCol ? row[sellerDiscountCol] : 0);
+    const orderRefundAmount = parseUploadNumber(orderRefundAmountCol ? row[orderRefundAmountCol] : 0);
     const paidDate = parseUploadDate(row[paidTimeCol]);
     const createdDate = parseUploadDate(row[createdTimeCol]);
     const orderDate = paidDate || createdDate;
     const statusText = `${orderStatus} ${orderSubstatus} ${cancelType}`.toLowerCase();
     const isCancelled = statusText.includes("cancel") || Boolean(parseUploadDate(row[cancelledTimeCol]));
+    const delivered = Boolean(parseUploadDate(row[deliveredTimeCol])) || statusText.includes("delivered");
+    const refunded = orderRefundAmount > 0 || returnedQuantity > 0 || statusText.includes("refund") || statusText.includes("return");
+    const customerProxy = cleanUploadText(row[buyerUsernameCol]) || cleanUploadText(row[buyerNicknameCol]) || cleanUploadText(row[recipientCol]);
     const netUnits = isCancelled ? 0 : Math.max(quantity - returnedQuantity, 0);
     // IMPORTANT: "gross_sales" is used as *Gross Product Sales* (TikTok dashboard GMV-style),
     // i.e. SUM(SKU Subtotal Before Discount). This includes cancelled rows (GMV), while demand units
@@ -942,6 +966,14 @@ function normalizeUploadRows(rawRows, platform) {
       gross_sales: grossProductSales,
       net_gross_sales: netGrossSalesEst,
       net_units: netUnits,
+      status_label: statusLabel(orderStatus),
+      is_cancelled: isCancelled,
+      delivered,
+      refunded,
+      customer_proxy: customerProxy,
+      city: cleanUploadText(row[cityCol]),
+      state: cleanUploadText(row[stateCol]),
+      zipcode: normalizeZip(row[zipCol]),
     };
   }).filter((row) => (row.order_date || row.paid_date || row.created_date) && row.product_name);
 }
@@ -974,6 +1006,225 @@ function aggregateLeanDemandRows(normalizedRows, platform) {
     .sort((a, b) => a.date.localeCompare(b.date) || a.product_name.localeCompare(b.product_name));
 }
 
+function buildKpiDeltaFromNormalizedRows(normalizedRows, counts = {}) {
+  const makeBucket = () => ({
+    orderFacts: new Map(),
+    monthlyProducts: new Map(),
+  });
+  const topRowsPerMonth = (rows, monthKey, valueKey, limit) => {
+    const grouped = new Map();
+    rows.forEach((row) => {
+      const month = cleanUploadText(row[monthKey]);
+      const list = grouped.get(month) || [];
+      list.push(row);
+      grouped.set(month, list);
+    });
+    const output = [];
+    Array.from(grouped.keys()).sort().forEach((month) => {
+      const list = grouped.get(month) || [];
+      list.sort((a, b) => Number(b[valueKey] || 0) - Number(a[valueKey] || 0));
+      output.push(...list.slice(0, limit));
+    });
+    return output;
+  };
+  const buckets = {
+    paid_time: makeBucket(),
+    created_time: makeBucket(),
+    file_month: makeBucket(),
+  };
+
+  const normalizeCustomerKey = (value) => cleanUploadText(value).toLowerCase().replace(/\s+/g, " ").trim();
+
+  normalizedRows.forEach((row, index) => {
+    const paidDate = cleanUploadText(row.paid_date || row.order_date).slice(0, 10);
+    const createdDate = cleanUploadText(row.created_date || row.order_date || row.paid_date).slice(0, 10);
+    const fileMonthDate = (paidDate || createdDate) ? `${(paidDate || createdDate).slice(0, 7)}-01` : "";
+    const bucketDates = {
+      paid_time: paidDate,
+      created_time: createdDate || paidDate,
+      file_month: fileMonthDate,
+    };
+
+    Object.entries(bucketDates).forEach(([bucketName, reportingDate]) => {
+      if (!reportingDate) return;
+      const bucket = buckets[bucketName];
+      const orderId = cleanUploadText(row.order_id) || `missing-${index}`;
+      const orderKey = `${reportingDate}__${orderId}`;
+      const fact = bucket.orderFacts.get(orderKey) || {
+        reporting_date: reportingDate,
+        order_id: orderId,
+        gross_product_sales: 0,
+        net_product_sales: 0,
+        units_sold: 0,
+        returned_units: 0,
+        valid_order: true,
+        refunded: false,
+        delivered: false,
+        canceled_order: false,
+        status_counts: {},
+        customer_key: "",
+        city: "",
+        state: "",
+        zipcode: "",
+      };
+      fact.gross_product_sales = roundCurrency(Number(fact.gross_product_sales || 0) + Number(row.gross_sales || 0));
+      fact.net_product_sales = roundCurrency(Number(fact.net_product_sales || 0) + Number(row.net_gross_sales || 0));
+      fact.units_sold = Number(fact.units_sold || 0) + Number(row.net_units || 0);
+      fact.returned_units = Number(fact.returned_units || 0) + Number(row.returned_quantity || 0);
+      fact.valid_order = Boolean(fact.valid_order) && !Boolean(row.is_cancelled);
+      fact.refunded = Boolean(fact.refunded) || Boolean(row.refunded);
+      fact.delivered = Boolean(fact.delivered) || Boolean(row.delivered);
+      fact.canceled_order = !fact.valid_order;
+      const statusLabel = cleanUploadText(row.status_label) || "Unknown";
+      fact.status_counts[statusLabel] = Number(fact.status_counts[statusLabel] || 0) + 1;
+      if (!fact.customer_key) fact.customer_key = normalizeCustomerKey(row.customer_proxy);
+      if (!fact.city) fact.city = cleanUploadText(row.city);
+      if (!fact.state) fact.state = cleanUploadText(row.state);
+      if (!fact.zipcode) fact.zipcode = cleanUploadText(row.zipcode);
+      bucket.orderFacts.set(orderKey, fact);
+
+      const reportingMonth = reportingDate.slice(0, 7);
+      const productName = cleanUploadText(row.product_name);
+      if (productName) {
+        const productKey = `${reportingMonth}__${productName}`;
+        const product = bucket.monthlyProducts.get(productKey) || {
+          reporting_month: reportingMonth,
+          product_name: productName,
+          units_sold: 0,
+          gross_product_sales: 0,
+          net_product_sales: 0,
+          unit_cogs: 0,
+        };
+        product.units_sold = Number(product.units_sold || 0) + Number(row.net_units || 0);
+        product.gross_product_sales = roundCurrency(Number(product.gross_product_sales || 0) + Number(row.gross_sales || 0));
+        product.net_product_sales = roundCurrency(Number(product.net_product_sales || 0) + Number(row.net_gross_sales || 0));
+        bucket.monthlyProducts.set(productKey, product);
+      }
+    });
+  });
+
+  const outBuckets = {};
+  Object.entries(buckets).forEach(([bucketName, bucket]) => {
+    const dailyMap = new Map();
+    const cityMap = new Map();
+    const zipMap = new Map();
+    const dailyCustomerSets = new Map();
+
+    bucket.orderFacts.forEach((fact) => {
+      const reportingDate = String(fact.reporting_date || "");
+      const reportingMonth = reportingDate.slice(0, 7);
+      const current = dailyMap.get(reportingDate) || {
+        reporting_date: reportingDate,
+        gross_product_sales: 0,
+        net_product_sales: 0,
+        paid_orders: 0,
+        valid_orders: 0,
+        units_sold: 0,
+        refunded_orders: 0,
+        returned_units: 0,
+        delivered_orders: 0,
+        canceled_orders: 0,
+        blank_customer_orders: 0,
+        status_counts: {},
+      };
+      current.gross_product_sales = roundCurrency(Number(current.gross_product_sales || 0) + Number(fact.gross_product_sales || 0));
+      current.net_product_sales = roundCurrency(Number(current.net_product_sales || 0) + Number(fact.net_product_sales || 0));
+      current.paid_orders += 1;
+      current.valid_orders += fact.valid_order ? 1 : 0;
+      current.units_sold += Number(fact.units_sold || 0);
+      current.refunded_orders += fact.refunded ? 1 : 0;
+      current.returned_units += Number(fact.returned_units || 0);
+      current.delivered_orders += fact.delivered ? 1 : 0;
+      current.canceled_orders += fact.canceled_order ? 1 : 0;
+      current.blank_customer_orders += fact.customer_key ? 0 : 1;
+      Object.entries(fact.status_counts || {}).forEach(([label, value]) => {
+        current.status_counts[label] = Number(current.status_counts[label] || 0) + Number(value || 0);
+      });
+      dailyMap.set(reportingDate, current);
+
+      const customerSet = dailyCustomerSets.get(reportingDate) || new Set();
+      if (fact.customer_key) customerSet.add(fact.customer_key);
+      dailyCustomerSets.set(reportingDate, customerSet);
+
+      const cityKey = `${reportingMonth}__${cleanUploadText(fact.city).toLowerCase()}__${cleanUploadText(fact.state).toLowerCase()}`;
+      const city = cityMap.get(cityKey) || {
+        reporting_month: reportingMonth,
+        city: cleanUploadText(fact.city),
+        state: cleanUploadText(fact.state),
+        orders: 0,
+        customer_set: new Set(),
+      };
+      city.orders += 1;
+      if (fact.customer_key) city.customer_set.add(fact.customer_key);
+      cityMap.set(cityKey, city);
+
+      const zipKey = `${reportingMonth}__${cleanUploadText(fact.zipcode)}`;
+      const zip = zipMap.get(zipKey) || {
+        reporting_month: reportingMonth,
+        zipcode: cleanUploadText(fact.zipcode),
+        orders: 0,
+        customer_set: new Set(),
+      };
+      zip.orders += 1;
+      if (fact.customer_key) zip.customer_set.add(fact.customer_key);
+      zipMap.set(zipKey, zip);
+    });
+
+    const firstSeen = new Map();
+    Array.from(dailyCustomerSets.keys()).sort().forEach((date) => {
+      const set = dailyCustomerSets.get(date) || new Set();
+      set.forEach((customerKey) => {
+        if (!firstSeen.has(customerKey)) firstSeen.set(customerKey, date);
+      });
+    });
+
+    const daily = Array.from(dailyMap.values()).sort((a, b) => a.reporting_date.localeCompare(b.reporting_date));
+    daily.forEach((row) => {
+      const set = dailyCustomerSets.get(row.reporting_date) || new Set();
+      let newCustomers = 0;
+      let repeatCustomers = 0;
+      set.forEach((customerKey) => {
+        const seen = firstSeen.get(customerKey);
+        if (!seen) return;
+        if (seen === row.reporting_date) newCustomers += 1;
+        else if (seen < row.reporting_date) repeatCustomers += 1;
+      });
+      row.unique_customers = set.size;
+      row.new_customers = newCustomers;
+      row.repeat_customers = repeatCustomers;
+    });
+
+    outBuckets[bucketName] = {
+      daily,
+      products: topRowsPerMonth(Array.from(bucket.monthlyProducts.values()), "reporting_month", "units_sold", 80),
+      cities: topRowsPerMonth(Array.from(cityMap.values()).map((row) => ({
+        reporting_month: row.reporting_month,
+        city: row.city,
+        state: row.state,
+        orders: row.orders,
+        unique_customers: row.customer_set.size,
+      })), "reporting_month", "unique_customers", 250),
+      zips: topRowsPerMonth(Array.from(zipMap.values()).map((row) => ({
+        reporting_month: row.reporting_month,
+        zipcode: row.zipcode,
+        orders: row.orders,
+        unique_customers: row.customer_set.size,
+      })), "reporting_month", "unique_customers", 500),
+    };
+  });
+
+  return {
+    generated_at: new Date().toISOString(),
+    source: {
+      files: Number(counts.files || 0),
+      raw_rows: Number(counts.rawRowCount || 0),
+      usable_rows: Number(counts.sourceRowCount || 0),
+      unique_customers: Number(counts.uniqueCustomers || 0),
+    },
+    buckets: outBuckets,
+  };
+}
+
 async function readUploadFileRows(file) {
   const lowerName = String(file.name || "").toLowerCase();
   if (lowerName.endsWith(".xlsx")) {
@@ -996,6 +1247,11 @@ async function buildLeanUploadPayload(files, platform) {
     rawRowCount += rawRows.length;
     allNormalizedRows.push(...normalizeUploadRows(rawRows, platform));
   }
+  const uniqueCustomerKeys = new Set(
+    allNormalizedRows
+      .map((row) => cleanUploadText(row.customer_proxy).toLowerCase().replace(/\s+/g, " ").trim())
+      .filter(Boolean),
+  );
 
   // Keep the upload payload lean: we do not need order-level rows on the server.
   // Group by day + SKU so the JSON stays small even for large historical exports.
@@ -1029,12 +1285,19 @@ async function buildLeanUploadPayload(files, platform) {
 
   const rows = Array.from(grouped.values()).filter((row) => (row.order_date || row.paid_date || row.created_date) && row.product_name);
   const uploadedDates = Array.from(new Set(rows.map((row) => cleanUploadText(row.paid_date || row.order_date).slice(0, 10)).filter(Boolean))).sort();
+  const kpiDelta = buildKpiDeltaFromNormalizedRows(allNormalizedRows, {
+    files: Array.from(files).length,
+    rawRowCount,
+    sourceRowCount: allNormalizedRows.length,
+    uniqueCustomers: uniqueCustomerKeys.size,
+  });
   return {
     platform: cleanUploadText(platform) || "TikTok",
     rows,
     uploadedDates,
     rawRowCount,
     sourceRowCount: allNormalizedRows.length,
+    kpiDelta,
   };
 }
 
@@ -5257,17 +5520,25 @@ dataUploadForm.addEventListener("submit", async (event) => {
     }
 
     // Finalize a single audit record so the sidebar "Data as of" stays correct.
-    await postJson(url, {
-      finalize: true,
-      platform: uploadPayload.platform,
-      rawRowCount: uploadPayload.rawRowCount,
-      sourceRowCount: uploadPayload.sourceRowCount,
-      uploadedDates: uploadPayload.uploadedDates,
-      rowsWritten: totalRowsWritten,
-      skuRowsWritten: totalSkuRowsWritten,
-    });
+      await postJson(url, {
+        finalize: true,
+        platform: uploadPayload.platform,
+        rawRowCount: uploadPayload.rawRowCount,
+        sourceRowCount: uploadPayload.sourceRowCount,
+        uploadedDates: uploadPayload.uploadedDates,
+        rowsWritten: totalRowsWritten,
+        skuRowsWritten: totalSkuRowsWritten,
+        kpiDelta: uploadType === "orders" ? uploadPayload.kpiDelta : null,
+      });
 
-    await loadWorkspace();
+      await loadWorkspace();
+      if (uploadType === "orders") {
+        kpisRequested = false;
+        if (activePage === "kpis") {
+          await loadKpis();
+          kpisRequested = true;
+        }
+      }
     const rowsWritten = totalRowsWritten || uploadPayload.rows.length;
     const skuRowsWritten = totalSkuRowsWritten || 0;
     const uploadedDates = Array.isArray(uploadPayload.uploadedDates) ? uploadPayload.uploadedDates.filter(Boolean).slice().sort() : [];

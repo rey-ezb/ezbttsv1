@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requestPlannerDataSourceMode } from "@/lib/data-source-mode";
 import { finalizeHostedDemandUploadAudit, saveHostedDemandUpload } from "@/lib/hosted-planner";
+import { mergeAndPersistKpiCacheDelta } from "@/lib/tiktok-kpis";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,12 @@ export async function POST(request: NextRequest) {
         skuRowsWritten: Number(payload?.skuRowsWritten || 0),
         uploadedDates: Array.isArray(payload?.uploadedDates) ? payload.uploadedDates : [],
       }, preferredDataSource);
-      return NextResponse.json({ ok: true, finalize: result });
+      const kpiDelta = payload?.kpiDelta && typeof payload.kpiDelta === "object" ? payload.kpiDelta : null;
+      let kpi = null;
+      if (kpiDelta) {
+        kpi = await mergeAndPersistKpiCacheDelta(kpiDelta, preferredDataSource);
+      }
+      return NextResponse.json({ ok: true, finalize: result, kpi });
     }
     const upload = await saveHostedDemandUpload(
       "planningDemandDaily",
