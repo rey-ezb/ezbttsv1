@@ -47,8 +47,21 @@ export type SkuSalesSummaryRow = {
   avg_net_gross_per_unit: number;
 };
 
+export type UnmappedDemandRowSummary = {
+  sku_id: string;
+  seller_sku_resolved: string;
+  product_name: string;
+  platform: string;
+  row_count: number;
+  net_units: number;
+  gross_sales: number;
+  first_date: string;
+  last_date: string;
+};
+
 type ExpandOptions = {
   productUnitPrices?: Record<string, number>;
+  onUnmapped?: "throw" | "skip";
 };
 
 const DEFAULT_PRODUCT_UNIT_PRICES: Record<string, number> = {
@@ -224,6 +237,61 @@ function isAlreadyCoreProduct(productName: string) {
   return Boolean(PRODUCT_NAME_ALIASES[normalizedKey(productName)]);
 }
 
+function rowDate(row: DemandUploadInputRow) {
+  return cleanText(row.date || row.paid_date || row.order_date || row.created_date).slice(0, 10);
+}
+
+function resolveDemandRowComponents(row: DemandUploadInputRow, mappings: TikTokSkuMapping[]) {
+  const listingName = cleanText(row.product_name);
+  const mapping = findMapping(row, mappings);
+  const components = mapping?.components || (isAlreadyCoreProduct(listingName)
+    ? [{ productName: normalizeMappedProductName(listingName), units: 1 }]
+    : null);
+  return { mapping, components, listingName };
+}
+
+export function summarizeUnmappedDemandRows(rows: DemandUploadInputRow[], mappings: TikTokSkuMapping[]) {
+  const grouped = new Map<string, UnmappedDemandRowSummary>();
+
+  rows.forEach((row) => {
+    const date = rowDate(row);
+    const platform = cleanText(row.platform) || "TikTok";
+    const listingName = cleanText(row.product_name);
+    if (!date || !listingName) return;
+
+    const { mapping, components } = resolveDemandRowComponents(row, mappings);
+    if (mapping?.ignored || components) return;
+
+    const skuId = cleanText(row.sku_id || row.sku_id_resolved);
+    const sellerSku = cleanText(row.seller_sku_resolved || row.sku_id || row.sku_id_resolved);
+    const key = `${platform}__${sellerSku || skuId || listingName}__${listingName}`;
+    const current = grouped.get(key) || {
+      sku_id: skuId,
+      seller_sku_resolved: sellerSku,
+      product_name: listingName,
+      platform,
+      row_count: 0,
+      net_units: 0,
+      gross_sales: 0,
+      first_date: date,
+      last_date: date,
+    };
+    current.row_count += 1;
+    current.net_units += asNumber(row.net_units);
+    current.gross_sales = roundCurrency(current.gross_sales + asNumber(row.gross_sales));
+    if (!current.first_date || date < current.first_date) current.first_date = date;
+    if (!current.last_date || date > current.last_date) current.last_date = date;
+    grouped.set(key, current);
+  });
+
+  return Array.from(grouped.values()).sort(
+    (a, b) =>
+      a.product_name.localeCompare(b.product_name) ||
+      a.seller_sku_resolved.localeCompare(b.seller_sku_resolved) ||
+      a.sku_id.localeCompare(b.sku_id),
+  );
+}
+
 export function expandMappedDemandRows(rows: DemandUploadInputRow[], mappings: TikTokSkuMapping[], options: ExpandOptions = {}) {
   const grouped = new Map<string, MappedDemandRow>();
   const unitPrices = { ...DEFAULT_PRODUCT_UNIT_PRICES, ...(options.productUnitPrices || {}) };
@@ -234,14 +302,11 @@ export function expandMappedDemandRows(rows: DemandUploadInputRow[], mappings: T
     const listingName = cleanText(row.product_name);
     if (!date || !listingName) return;
 
-    const mapping = findMapping(row, mappings);
+    const { mapping, components } = resolveDemandRowComponents(row, mappings);
     const skuForError = cleanText(row.sku_id || row.sku_id_resolved || row.seller_sku_resolved) || listingName;
     if (mapping?.ignored) return;
-    const components = mapping?.components || (isAlreadyCoreProduct(listingName)
-      ? [{ productName: normalizeMappedProductName(listingName), units: 1 }]
-      : null);
-
     if (!components) {
+      if (options.onUnmapped === "skip") return;
       throw new Error(`Unmapped TikTok SKU ${skuForError}. Add it to the TikTok SKU mapping before uploading.`);
     }
 

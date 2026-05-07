@@ -35,4 +35,9 @@ test("forecast dialog keeps lift inputs editable when product lifts are active",
   assert.match(html, /id="forecast-copy-mix-apply"/);
   assert.match(html, /id="forecast-copy-mix-hint"/);
   assert.match(js, /applyCopiedMixFromMonth/);
+  assert.match(js, /data-forecast-copy-preview/);
+  assert.match(js, /forecast-copy-current/);
+  assert.match(js, /forecast-copy-next/);
+  assert.match(js, /renderForecastCopyMixPreview/);
+  assert.match(js, /forecastCopyMixMonth\.addEventListener\("change"/);
 });

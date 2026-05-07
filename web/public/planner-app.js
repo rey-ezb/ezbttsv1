@@ -1,6 +1,13 @@
 const summaryBlock = document.getElementById("summary-block");
-  const uploadStatus = document.getElementById("upload-status");
-  const resultSummary = document.getElementById("result-summary");
+const uploadStatus = document.getElementById("upload-status");
+const uploadSkuWarningDialog = document.getElementById("upload-sku-warning-dialog");
+const uploadSkuWarningCopy = document.getElementById("upload-sku-warning-copy");
+const uploadSkuWarningStatus = document.getElementById("upload-sku-warning-status");
+const uploadSkuWarningBody = document.getElementById("upload-sku-warning-body");
+const uploadSkuWarningCancel = document.getElementById("upload-sku-warning-cancel");
+const uploadSkuWarningContinue = document.getElementById("upload-sku-warning-continue");
+const uploadSkuWarningSaveContinue = document.getElementById("upload-sku-warning-save-continue");
+const resultSummary = document.getElementById("result-summary");
   const resultsHead = document.getElementById("results-head");
   const resultsBody = document.getElementById("results-body");
   const resultsCalloutCopy = document.getElementById("results-callout-copy");
@@ -57,6 +64,8 @@ const kpiEndDateInput = document.getElementById("kpi-end-date");
 const kpiBadgesRow = document.getElementById("kpi-badges-row");
 const kpiQualityRow = document.getElementById("kpi-quality-row");
 const kpiCardsGrid = document.getElementById("kpi-cards-grid");
+const kpiExecGrid = document.getElementById("kpi-exec-grid");
+const kpiExecWatchouts = document.getElementById("kpi-exec-watchouts");
 const kpiDetailToggle = document.getElementById("kpi-detail-toggle");
 const kpiCardDetailTitle = document.getElementById("kpi-card-detail-title");
 const kpiCardDetailCopy = document.getElementById("kpi-card-detail-copy");
@@ -158,6 +167,8 @@ let activeHistoricalTrendProduct = "__all__";
 let activeHistoricalTrendCompareEnabled = false;
 let activeHistoricalTrendProductB = "";
 let activeHistoricalTrendProductC = "";
+let uploadSkuWarningResolver = null;
+let uploadSkuWarningAllowsContinue = true;
 const plannerVariant = new URLSearchParams(window.location.search).get("plannerVariant") || "current";
 const appLoadingOverlay = document.getElementById("app-loading-overlay");
 const appLoadingMessage = document.getElementById("app-loading-message");
@@ -605,6 +616,216 @@ function normalizeSkuMappingRowForSave(row) {
     };
   }
   return { ...normalized, skuType };
+}
+
+function guessUploadWarningDraft(row) {
+  const listingName = normalizedKey(row?.product_name || row?.productName || "");
+  const matchingCore = CORE_PRODUCTS.find((product) => normalizedKey(product) === listingName || normalizedKey(displayProductName(product)) === listingName);
+  if (!matchingCore) return normalizeSkuMappingRow(row);
+  return normalizeSkuMappingRow({
+    ...row,
+    skuType: "base",
+    product1: matchingCore,
+  });
+}
+
+function setUploadSkuWarningStatus(message, isError = false) {
+  if (!uploadSkuWarningStatus) return;
+  uploadSkuWarningStatus.textContent = message || "";
+  uploadSkuWarningStatus.dataset.error = isError ? "true" : "false";
+}
+
+function mergeUploadSkuWarningSummaries(existingRows = [], nextRows = []) {
+  const merged = new Map();
+  [...(Array.isArray(existingRows) ? existingRows : []), ...(Array.isArray(nextRows) ? nextRows : [])].forEach((row) => {
+    const key = [
+      String(row?.platform || "").trim(),
+      String(row?.seller_sku_resolved || "").trim(),
+      String(row?.sku_id || "").trim(),
+      String(row?.product_name || "").trim(),
+    ].join("__");
+    if (!key.replace(/_/g, "")) return;
+    const current = merged.get(key) || {
+      sku_id: String(row?.sku_id || "").trim(),
+      seller_sku_resolved: String(row?.seller_sku_resolved || "").trim(),
+      product_name: String(row?.product_name || "").trim(),
+      platform: String(row?.platform || "TikTok").trim() || "TikTok",
+      row_count: 0,
+      net_units: 0,
+      gross_sales: 0,
+      first_date: String(row?.first_date || "").trim(),
+      last_date: String(row?.last_date || "").trim(),
+    };
+    current.row_count += Number(row?.row_count || 0);
+    current.net_units += Number(row?.net_units || 0);
+    current.gross_sales = roundCurrency(Number(current.gross_sales || 0) + Number(row?.gross_sales || 0));
+    const firstDate = String(row?.first_date || "").trim();
+    const lastDate = String(row?.last_date || "").trim();
+    if (firstDate && (!current.first_date || firstDate < current.first_date)) current.first_date = firstDate;
+    if (lastDate && (!current.last_date || lastDate > current.last_date)) current.last_date = lastDate;
+    merged.set(key, current);
+  });
+  return Array.from(merged.values()).sort((a, b) => productSortValue(a.product_name).localeCompare(productSortValue(b.product_name)) || String(a.seller_sku_resolved || "").localeCompare(String(b.seller_sku_resolved || "")));
+}
+
+function renderUploadSkuWarningRows(rows) {
+  if (!uploadSkuWarningBody) return;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    uploadSkuWarningBody.innerHTML = '<tr><td colspan="11" class="empty">No unmapped SKUs found.</td></tr>';
+    return;
+  }
+  uploadSkuWarningBody.innerHTML = rows.map((row) => {
+    const normalized = guessUploadWarningDraft({
+      skuId: row.sku_id,
+      productName: row.product_name,
+      product1: row.product1,
+      product2: row.product2,
+      product3: row.product3,
+      product4: row.product4,
+      skuType: row.skuType || "",
+    });
+    const skuType = String(normalized.skuType || "");
+    const dateRange = row.first_date && row.last_date && row.first_date !== row.last_date
+      ? `${row.first_date} to ${row.last_date}`
+      : (row.first_date || row.last_date || "n/a");
+    return `
+      <tr data-upload-sku-warning-row="true">
+        <td class="text-left">
+          <div class="upload-sku-cell-title">${escapeHtml(normalized.skuId || row.seller_sku_resolved || "New SKU")}</div>
+          <div class="upload-sku-cell-sub">${escapeHtml(row.seller_sku_resolved || "")}</div>
+        </td>
+        <td class="text-left">${escapeHtml(normalized.productName || row.product_name || "")}</td>
+        <td>${escapeHtml(dateRange)}</td>
+        <td>${integer(row.net_units || 0)}</td>
+        <td>
+          <select data-upload-sku-map="skuType" aria-label="SKU type">
+            <option value="" ${!skuType ? "selected" : ""}>Choose...</option>
+            <option value="base" ${skuType === "base" ? "selected" : ""}>Core</option>
+            <option value="bundle" ${skuType === "bundle" ? "selected" : ""}>Bundle</option>
+            <option value="ignore" ${skuType === "ignore" ? "selected" : ""}>Ignore</option>
+          </select>
+        </td>
+        <td class="text-left"><input type="text" data-upload-sku-map="skuId" value="${escapeHtml(normalized.skuId)}"></td>
+        <td class="text-left"><input type="text" data-upload-sku-map="productName" value="${escapeHtml(normalized.productName)}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-upload-sku-map="product1" value="${escapeHtml(displayProductName(normalized.product1))}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-upload-sku-map="product2" value="${escapeHtml(displayProductName(normalized.product2))}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-upload-sku-map="product3" value="${escapeHtml(displayProductName(normalized.product3))}"></td>
+        <td><input type="text" list="sku-mapping-core-products" data-upload-sku-map="product4" value="${escapeHtml(displayProductName(normalized.product4))}"></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function readUploadSkuWarningRows() {
+  if (!uploadSkuWarningBody) return [];
+  return Array.from(uploadSkuWarningBody.querySelectorAll('tr[data-upload-sku-warning-row="true"]')).map((tr) => {
+    const inputs = Array.from(tr.querySelectorAll("input[data-upload-sku-map]"));
+    const selects = Array.from(tr.querySelectorAll("select[data-upload-sku-map]"));
+    const values = Object.fromEntries(inputs.map((input) => [String(input.dataset.uploadSkuMap || ""), String(input.value || "").trim()]));
+    selects.forEach((select) => {
+      values[String(select.dataset.uploadSkuMap || "")] = String(select.value || "").trim();
+    });
+    return normalizeSkuMappingRow({
+      skuId: values.skuId,
+      productName: values.productName,
+      skuType: values.skuType,
+      product1: values.product1,
+      product2: values.product2,
+      product3: values.product3,
+      product4: values.product4,
+      source: "override",
+    });
+  });
+}
+
+function buildUploadSkuWarningSaveRows() {
+  const rows = [];
+  const errors = [];
+  readUploadSkuWarningRows().forEach((row) => {
+    const hasIntent = Boolean(row.skuType || row.product1 || row.product2 || row.product3 || row.product4);
+    if (!hasIntent) return;
+    const normalized = normalizeSkuMappingRowForSave(row);
+    if (!normalized.skuId || !normalized.productName) {
+      errors.push("Each new mapping needs both SKU ID and listing name.");
+      return;
+    }
+    if (!normalized.product1) {
+      errors.push(`Add at least Product 1 or choose Ignore for ${normalized.productName}.`);
+      return;
+    }
+    rows.push({
+      skuId: normalized.skuId,
+      productName: normalized.productName,
+      product1: normalized.product1,
+      product2: normalized.product2,
+      product3: normalized.product3,
+      product4: normalized.product4,
+    });
+  });
+  return { rows, errors };
+}
+
+function closeUploadSkuWarningDialog() {
+  if (uploadSkuWarningDialog instanceof HTMLDialogElement) {
+    uploadSkuWarningDialog.close();
+  }
+}
+
+function resolveUploadSkuWarning(decision) {
+  if (typeof uploadSkuWarningResolver === "function") {
+    uploadSkuWarningResolver(decision);
+  }
+  uploadSkuWarningResolver = null;
+}
+
+function openUploadSkuWarningDialog({ unmappedRows, canContinue }) {
+  if (!(uploadSkuWarningDialog instanceof HTMLDialogElement)) {
+    return Promise.resolve({ action: canContinue ? "continue" : "cancel", rows: [] });
+  }
+  uploadSkuWarningAllowsContinue = Boolean(canContinue);
+  setUploadSkuWarningStatus("");
+  renderUploadSkuWarningRows(unmappedRows);
+  if (uploadSkuWarningCopy instanceof HTMLElement) {
+    uploadSkuWarningCopy.textContent = canContinue
+      ? `We found ${integer(unmappedRows.length)} new SKU${unmappedRows.length === 1 ? "" : "s"}. You can map them now, or continue upload with warning and skip them from core-product planning math for this upload.`
+      : `We found ${integer(unmappedRows.length)} new SKU${unmappedRows.length === 1 ? "" : "s"}, and every usable row in this upload depends on them. Save at least one mapping before continuing.`;
+  }
+  if (uploadSkuWarningContinue instanceof HTMLButtonElement) {
+    uploadSkuWarningContinue.disabled = !canContinue;
+    uploadSkuWarningContinue.textContent = "Continue upload with warning";
+  }
+  uploadSkuWarningDialog.showModal();
+  return new Promise((resolve) => {
+    uploadSkuWarningResolver = resolve;
+  });
+}
+
+async function inspectUploadSkuMappings(rows) {
+  return await postJson("/api/sku-mapping/check", { rows });
+}
+
+async function saveAdditionalSkuMappingOverrides(rows) {
+  const unlocked = await ensureSettingsUnlocked();
+  if (!unlocked) {
+    throw new Error("Settings are locked.");
+  }
+  const merged = new Map((skuMappingSnapshot.localRows || []).map((row) => [skuMappingKey(row), normalizeSkuMappingRowForSave(row)]));
+  rows.forEach((row) => {
+    const normalized = normalizeSkuMappingRowForSave(row);
+    merged.set(skuMappingKey(normalized), normalized);
+  });
+  const payload = await postJson("/api/sku-mapping", {
+    rows: Array.from(merged.values()).map((row) => ({
+      skuId: row.skuId,
+      productName: row.productName,
+      product1: row.product1,
+      product2: row.product2,
+      product3: row.product3,
+      product4: row.product4,
+    })),
+  });
+  await loadSkuMapping();
+  return payload;
 }
 
 async function loadSkuMapping() {
@@ -1247,11 +1468,13 @@ async function buildLeanUploadPayload(files, platform) {
     rawRowCount += rawRows.length;
     allNormalizedRows.push(...normalizeUploadRows(rawRows, platform));
   }
-  const uniqueCustomerKeys = new Set(
-    allNormalizedRows
-      .map((row) => cleanUploadText(row.customer_proxy).toLowerCase().replace(/\s+/g, " ").trim())
-      .filter(Boolean),
-  );
+  const normalizedRowsByPaidDate = {};
+  allNormalizedRows.forEach((row) => {
+    const date = cleanUploadText(row.paid_date || row.order_date).slice(0, 10);
+    if (!date) return;
+    if (!Array.isArray(normalizedRowsByPaidDate[date])) normalizedRowsByPaidDate[date] = [];
+    normalizedRowsByPaidDate[date].push(row);
+  });
 
   // Keep the upload payload lean: we do not need order-level rows on the server.
   // Group by day + SKU so the JSON stays small even for large historical exports.
@@ -1285,19 +1508,14 @@ async function buildLeanUploadPayload(files, platform) {
 
   const rows = Array.from(grouped.values()).filter((row) => (row.order_date || row.paid_date || row.created_date) && row.product_name);
   const uploadedDates = Array.from(new Set(rows.map((row) => cleanUploadText(row.paid_date || row.order_date).slice(0, 10)).filter(Boolean))).sort();
-  const kpiDelta = buildKpiDeltaFromNormalizedRows(allNormalizedRows, {
-    files: Array.from(files).length,
-    rawRowCount,
-    sourceRowCount: allNormalizedRows.length,
-    uniqueCustomers: uniqueCustomerKeys.size,
-  });
   return {
     platform: cleanUploadText(platform) || "TikTok",
     rows,
     uploadedDates,
     rawRowCount,
     sourceRowCount: allNormalizedRows.length,
-    kpiDelta,
+    normalizedRowsByPaidDate,
+    fileCount: Array.from(files).length,
   };
 }
 
@@ -1444,6 +1662,29 @@ async function syncHostedKpiAvailability() {
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message || "";
   uploadStatus.dataset.error = isError ? "true" : "false";
+}
+
+function isTransientUploadStatusMessage(message) {
+  const raw = String(message || "");
+  const lowered = raw.toLowerCase();
+  return (
+    raw.includes("Server returned HTML instead of JSON") ||
+    raw.includes("Server returned non-JSON") ||
+    raw.includes("Dev server got into a bad state") ||
+    lowered.includes("server restarted into a bad state") ||
+    lowered.includes("missing a next.js file") ||
+    lowered.includes("restart the server, then refresh the page") ||
+    lowered.includes("returned an html error page") ||
+    lowered.includes("api route hit an error")
+  );
+}
+
+function clearTransientUploadStatusIfRecovered() {
+  if (uploadStatus?.dataset?.error !== "true") return;
+  const message = String(uploadStatus.textContent || "");
+  if (isTransientUploadStatusMessage(message)) {
+    setStatus("");
+  }
 }
 
 function setButtonBusy(button, busy, label) {
@@ -1857,6 +2098,54 @@ function renderForecastCopyMixPicker(monthKey, { editable = true } = {}) {
   forecastCopyMixMonth.disabled = !editable;
 }
 
+function readCurrentForecastProductMix(fallbackMix = null) {
+  if (!forecastProductMixInputs) {
+    return normalizeProductMix(fallbackMix || {}, defaultProductMix());
+  }
+  const inputs = Array.from(forecastProductMixInputs.querySelectorAll("input[data-product-mix]"));
+  if (!inputs.length) {
+    return normalizeProductMix(fallbackMix || {}, defaultProductMix());
+  }
+  return normalizeProductMix(
+    Object.fromEntries(inputs.map((input) => [String(input.dataset.productMix || ""), Number(input.value || 0)])),
+    defaultProductMix(),
+  );
+}
+
+function renderForecastCopyMixPreview(referenceMonthKey, fallbackMix = null) {
+  if (!(forecastProductMixInputs instanceof HTMLElement)) return;
+  const previewNodes = Array.from(forecastProductMixInputs.querySelectorAll("[data-forecast-copy-preview]"));
+  if (!previewNodes.length) return;
+  const referenceMix = getMonthlyActualMix(referenceMonthKey);
+  const copiedMix = computeMixFromReference(referenceMix);
+  if (!referenceMonthKey || !referenceMix || !copiedMix) {
+    previewNodes.forEach((node) => {
+      if (!(node instanceof HTMLElement)) return;
+      node.hidden = true;
+      node.innerHTML = "";
+    });
+    return;
+  }
+
+  const currentMix = readCurrentForecastProductMix(fallbackMix);
+  CORE_PRODUCTS.forEach((product) => {
+    const node = forecastProductMixInputs.querySelector(`[data-forecast-copy-preview="${CSS.escape(product)}"]`);
+    if (!(node instanceof HTMLElement)) return;
+    const current = Number(currentMix?.[product] || 0);
+    const next = Number(copiedMix?.[product] || 0);
+    const delta = roundCurrency(next - current);
+    const deltaLabel = `${delta > 0 ? "+" : ""}${number(delta)}%`;
+    const deltaClass = delta > 0.05 ? "is-up" : delta < -0.05 ? "is-down" : "is-flat";
+    node.hidden = false;
+    node.innerHTML = [
+      `<span class="forecast-copy-current">Current ${escapeHtml(number(current))}%</span>`,
+      '<span class="forecast-copy-arrow" aria-hidden="true">→</span>',
+      `<span class="forecast-copy-next">Preview ${escapeHtml(number(next))}%</span>`,
+      `<span class="forecast-copy-delta ${deltaClass}">Δ ${escapeHtml(deltaLabel)}</span>`,
+    ].join("");
+  });
+}
+
 function applyCopiedMixFromMonth(referenceMonthKey) {
   if (!referenceMonthKey) return false;
   const referenceMix = getMonthlyActualMix(referenceMonthKey);
@@ -1873,6 +2162,7 @@ function applyCopiedMixFromMonth(referenceMonthKey) {
 
   updateForecastMixTotal();
   syncForecastInputsFromProductLifts({ baselineUnits: baselineUnitsLookup(), readOnly: false });
+  renderForecastCopyMixPreview(referenceMonthKey);
   return true;
 }
 
@@ -2399,6 +2689,7 @@ function renderForecastProductMixInputs(setting, options = {}) {
         </span>
       </span>
       <small class="forecast-product-footnote">Planned units ${number(computed.rows.find((row) => row.product === product)?.plannedUnits || 0)} | Planned share ${number(computed.rows.find((row) => row.product === product)?.plannedSharePct || 0)}%</small>
+      <small class="forecast-copy-inline" data-forecast-copy-preview="${escapeHtml(product)}" hidden></small>
     </label>
   `).join("");
   updateForecastMixTotal();
@@ -2512,6 +2803,7 @@ function loadForecastDialogMonth(monthKey) {
     baselineUnits,
     readOnly: !editable,
   });
+  renderForecastCopyMixPreview(forecastCopyMixMonth instanceof HTMLSelectElement ? forecastCopyMixMonth.value : "", setting.productMix || monthActualMix || baselineMix);
   if (editable) {
     syncForecastInputsFromProductLifts({ baselineUnits, readOnly: false });
   } else if (forecastLiftGuidance) {
@@ -4030,6 +4322,91 @@ function formatMetric(value, format = "text") {
   return value || "—";
 }
 
+function renderDeltaPill(delta) {
+  if (delta === null || delta === undefined || !Number.isFinite(Number(delta))) {
+    return '<span class="kpi-delta-pill kpi-delta-muted">n/a</span>';
+  }
+  const numeric = Number(delta);
+  const tone = numeric >= 0 ? "up" : "down";
+  const sign = numeric >= 0 ? "+" : "";
+  return `<span class="kpi-delta-pill kpi-delta-${tone}">${sign}${(numeric * 100).toFixed(1)}%</span>`;
+}
+
+function renderExecutivePanel(payload) {
+  const executive = payload?.executive || {};
+  const summaryRows = executive.summary || [];
+  const profit = executive.profit || {};
+  const concentration = executive.concentration || {};
+  const watchouts = executive.watchouts || [];
+  const topRevenueCities = executive.geography?.topRevenueCities || [];
+  const fastGrowingCities = executive.geography?.fastGrowingCities || [];
+  const trendRows = executive.customerMomentum?.trendRows || [];
+  const latestTrend = trendRows.length ? trendRows[trendRows.length - 1] : null;
+
+  kpiExecGrid.innerHTML = `
+    <article class="kpi-exec-card">
+      <p class="eyebrow">Executive pulse</p>
+      <h3>Period-over-period movement</h3>
+      <div class="kpi-exec-list">
+        ${summaryRows.length ? summaryRows.map((row) => `
+          <div>
+            <span>${row.label}</span>
+            <strong>${row.key?.includes("sales") ? money(row.value) : integer(row.value)}</strong>
+            <span class="kpi-exec-deltas">vs prior ${renderDeltaPill(row.delta_vs_prior)} · vs YoY ${renderDeltaPill(row.delta_vs_yoy)}</span>
+          </div>
+        `).join("") : '<div class="empty-panel">No executive summary rows yet.</div>'}
+      </div>
+    </article>
+    <article class="kpi-exec-card">
+      <p class="eyebrow">Profit lens</p>
+      <h3>Estimated contribution</h3>
+      <div class="kpi-exec-list">
+        <div><span>Estimated COGS</span><strong>${money(profit.estimated_cogs)}</strong></div>
+        <div><span>Estimated contribution</span><strong>${money(profit.estimated_contribution)}</strong></div>
+        <div><span>Contribution margin</span><strong>${percent(profit.contribution_margin_pct)}</strong></div>
+        <div><span>Net to gross realization</span><strong>${percent(profit.net_to_gross_ratio)}</strong></div>
+      </div>
+    </article>
+    <article class="kpi-exec-card">
+      <p class="eyebrow">Concentration risk</p>
+      <h3>SKU dependency check</h3>
+      <div class="kpi-exec-list">
+        <div><span>Top product</span><strong>${concentration.top_product_name || "—"}</strong></div>
+        <div><span>Top product sales share</span><strong>${percent(concentration.top_product_sales_share)}</strong></div>
+        <div><span>Top 3 sales share</span><strong>${percent(concentration.top3_sales_share)}</strong></div>
+        <div><span>Risk level</span><strong class="kpi-risk-${String(concentration.risk_level || "low")}">${String(concentration.risk_level || "low").toUpperCase()}</strong></div>
+      </div>
+    </article>
+    <article class="kpi-exec-card">
+      <p class="eyebrow">Growth source</p>
+      <h3>Customer and geography momentum</h3>
+      <div class="kpi-exec-list">
+        <div><span>Latest month new customers</span><strong>${integer(latestTrend?.new_customers)}</strong></div>
+        <div><span>Latest month repeat customers</span><strong>${integer(latestTrend?.repeat_customers)}</strong></div>
+        <div><span>Latest month repeat rate</span><strong>${percent(latestTrend?.repeat_rate)}</strong></div>
+        <div><span>Top estimated revenue city</span><strong>${topRevenueCities[0] ? `${topRevenueCities[0].city}, ${topRevenueCities[0].state}` : "—"}</strong></div>
+        <div><span>Fastest growing city</span><strong>${fastGrowingCities[0] ? `${fastGrowingCities[0].city}, ${fastGrowingCities[0].state}` : "—"}</strong></div>
+      </div>
+    </article>
+  `;
+
+  kpiExecWatchouts.innerHTML = `
+    <p class="eyebrow">Watchouts</p>
+    <h3>Actionable exceptions</h3>
+    <div class="kpi-watchout-list">
+      ${watchouts.length ? watchouts.map((item) => `
+        <article class="kpi-watchout kpi-watchout-${item.level || "watch"}">
+          <div>
+            <strong>${item.title || "Watchout"}</strong>
+            <p>${item.detail || ""}</p>
+          </div>
+          <span>${String(item.level || "watch").toUpperCase()}</span>
+        </article>
+      `).join("") : '<div class="empty-panel">No watchouts available.</div>'}
+    </div>
+  `;
+}
+
 function currentKpiSources() {
   const selected = Array.from(kpiFilterForm.querySelectorAll('.source-pill input[type="checkbox"]:checked')).map((input) => input.value);
   return selected.length ? selected : ["Sales"];
@@ -4538,6 +4915,10 @@ function renderFinanceTab(tab) {
           <div><span>Fees</span><strong>${money(summary.fees)}</strong></div>
           <div><span>Adjustments</span><strong>${money(summary.adjustments)}</strong></div>
           <div><span>Payout amount</span><strong>${money(summary.payout_amount)}</strong></div>
+          <div><span>Estimated COGS</span><strong>${money(summary.estimated_cogs)}</strong></div>
+          <div><span>Estimated contribution</span><strong>${money(summary.estimated_contribution)}</strong></div>
+          <div><span>Contribution margin</span><strong>${percent(summary.contribution_margin_pct)}</strong></div>
+          <div><span>Net to gross realization</span><strong>${percent(summary.net_to_gross_ratio)}</strong></div>
         </div>
       </section>
       <section class="workspace-card workspace-card-wide">
@@ -4652,6 +5033,11 @@ function renderProductsTab(tab) {
           <div><span>Sales units</span><strong>${integer(summary.salesUnits)}</strong></div>
           <div><span>Gross sales</span><strong>${money(summary.grossSales)}</strong></div>
           <div><span>Estimated COGS</span><strong>${money(summary.estimatedCogs)}</strong></div>
+          <div><span>Estimated contribution</span><strong>${money(summary.estimatedContribution)}</strong></div>
+          <div><span>Contribution margin</span><strong>${percent(summary.contributionMarginPct)}</strong></div>
+          <div><span>Top product sales share</span><strong>${percent(summary.topProductSalesShare)}</strong></div>
+          <div><span>Top 3 sales share</span><strong>${percent(summary.top3SalesShare)}</strong></div>
+          <div><span>Concentration risk</span><strong>${String(summary.concentrationRisk || "low").toUpperCase()}</strong></div>
           <div><span>Sample units</span><strong>${integer(summary.sampleUnits)}</strong></div>
           <div><span>Replacement units</span><strong>${integer(summary.replacementUnits)}</strong></div>
         </div>
@@ -4712,6 +5098,8 @@ function renderProductsTab(tab) {
 
 function renderCustomersTab(tab) {
   const snapshot = tab.targetingSnapshot || {};
+  const trendRows = tab.monthlyTrendRows || [];
+  const opportunities = tab.opportunitySnapshot || {};
   return `
     <div class="workspace-grid">
       <section class="workspace-card">
@@ -4756,12 +5144,43 @@ function renderCustomersTab(tab) {
         <h3>Cohort heatmap</h3>
         ${buildCohortHeatmap(tab.cohortRows || [])}
       </section>
+      <section class="workspace-card workspace-card-wide">
+        <p class="eyebrow">Momentum</p>
+        <h3>New vs repeat by month (last 6)</h3>
+        ${renderInlineTable(
+          [
+            { label: "Month", key: "month" },
+            { label: "New customers", key: "new_customers", format: "integer" },
+            { label: "Repeat customers", key: "repeat_customers", format: "integer" },
+            { label: "Unique customers", key: "unique_customers", format: "integer" },
+            { label: "Repeat rate", key: "repeat_rate", format: "percent" },
+          ],
+          trendRows,
+          "No customer trend rows yet.",
+        )}
+      </section>
+      <section class="workspace-card workspace-card-wide">
+        <p class="eyebrow">Opportunities</p>
+        <h3>City opportunity ranking</h3>
+        ${renderInlineTable(
+          [
+            { label: "City", key: "city" },
+            { label: "State", key: "state" },
+            { label: "Est. revenue", key: "estimated_revenue", format: "money" },
+            { label: "Customers", key: "customers", format: "integer" },
+            { label: "Orders / customer", key: "orders_per_customer", format: "number" },
+          ],
+          opportunities.topRevenueCities || [],
+          "No city opportunity rows yet.",
+        )}
+      </section>
     </div>
   `;
 }
 
 function renderAuditTab(tab) {
   const quality = tab.dataQuality || {};
+  const watchouts = tab.watchouts || [];
   return `
     <div class="workspace-grid">
       <section class="workspace-card">
@@ -4776,6 +5195,13 @@ function renderAuditTab(tab) {
         <h3>Report highlights</h3>
         <div class="audit-list">
           ${(tab.reportHighlights || []).length ? (tab.reportHighlights || []).map((item) => `<div>${item}</div>`).join("") : '<div class="empty-panel">No report highlights yet.</div>'}
+        </div>
+      </section>
+      <section class="workspace-card">
+        <p class="eyebrow">Exceptions</p>
+        <h3>Watchouts</h3>
+        <div class="audit-list">
+          ${watchouts.length ? watchouts.map((item) => `<div><strong>${item.title || "Watchout"}:</strong> ${item.detail || ""}</div>`).join("") : '<div class="empty-panel">No watchouts in this slice.</div>'}
         </div>
       </section>
       <section class="workspace-card workspace-card-wide">
@@ -4942,6 +5368,7 @@ function renderKpis(payload) {
   kpiTabButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.kpiTab === activeKpiTab));
   renderBadgeRows(payload);
   renderMetricCards(payload.cards || {});
+  renderExecutivePanel(payload);
   renderCardDetail(payload);
   renderKpiWorkspace(payload);
 }
@@ -5061,6 +5488,7 @@ function sleep(ms) {
 
 function isRetryableFetchError(error) {
   const message = String(error && error.message ? error.message : error || "");
+  const lowered = message.toLowerCase();
   return (
     message.includes("HTTP 502") ||
     message.includes("HTTP 503") ||
@@ -5069,6 +5497,8 @@ function isRetryableFetchError(error) {
     message.includes("NetworkError") ||
     message.includes("Load failed") ||
     message.includes("Server returned HTML instead of JSON") ||
+    lowered.includes("server restarted into a bad state") ||
+    lowered.includes("missing a next.js file") ||
     message.includes("returned a web page instead of data") ||
     message.includes("returned an HTML error page")
   );
@@ -5111,6 +5541,7 @@ async function fetchJson(url, options) {
       if (!response.ok || payload.error) {
         throw new Error(payload.error || `Request failed (${response.status})`);
       }
+      clearTransientUploadStatusIfRecovered();
       return payload;
     } catch (error) {
       lastError = error;
@@ -5267,6 +5698,42 @@ settingsAuthDialog?.addEventListener("close", () => {
   }
 });
 
+uploadSkuWarningCancel?.addEventListener("click", () => {
+  resolveUploadSkuWarning({ action: "cancel", rows: [] });
+  closeUploadSkuWarningDialog();
+});
+
+uploadSkuWarningContinue?.addEventListener("click", () => {
+  if (!uploadSkuWarningAllowsContinue) return;
+  resolveUploadSkuWarning({ action: "continue", rows: [] });
+  closeUploadSkuWarningDialog();
+});
+
+uploadSkuWarningSaveContinue?.addEventListener("click", () => {
+  const { rows, errors } = buildUploadSkuWarningSaveRows();
+  if (errors.length) {
+    setUploadSkuWarningStatus(errors[0], true);
+    return;
+  }
+  if (!rows.length) {
+    setUploadSkuWarningStatus(
+      uploadSkuWarningAllowsContinue
+        ? "Add at least one mapping here, or use Continue upload with warning."
+        : "Add at least one mapping before continuing.",
+      true,
+    );
+    return;
+  }
+  resolveUploadSkuWarning({ action: "save-continue", rows });
+  closeUploadSkuWarningDialog();
+});
+
+uploadSkuWarningDialog?.addEventListener("close", () => {
+  if (uploadSkuWarningResolver) {
+    resolveUploadSkuWarning({ action: "cancel", rows: [] });
+  }
+});
+
 settingsAuthForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   beginScreenBusy("Unlocking settings...");
@@ -5348,12 +5815,7 @@ async function loadWorkspace() {
   await loadMarketingConfig();
   await loadSkuMapping();
   // Clear stale "server returned HTML" errors once the backend is healthy again.
-  if (uploadStatus?.dataset?.error === "true") {
-    const message = String(uploadStatus.textContent || "");
-    if (message.includes("Server returned HTML instead of JSON") || message.includes("Server returned non-JSON") || message.includes("Dev server got into a bad state")) {
-      setStatus("");
-    }
-  }
+  clearTransientUploadStatusIfRecovered();
   const summary = workspace.summary || {};
   if (summary.date_end) {
     const endDate = new Date(`${summary.date_end}T00:00:00Z`);
@@ -5496,6 +5958,28 @@ dataUploadForm.addEventListener("submit", async (event) => {
     if (!uploadPayload.rows.length) {
       throw new Error(`Could not find any usable planning rows in the selected ${label}.`);
     }
+    let uploadWarnings = [];
+    let mappingInspection = await inspectUploadSkuMappings(uploadPayload.rows);
+    while (Array.isArray(mappingInspection?.unmappedRows) && mappingInspection.unmappedRows.length) {
+      const unmappedRowCount = mappingInspection.unmappedRows.reduce((sum, row) => sum + Number(row?.row_count || 0), 0);
+      const canContinueWithWarning = uploadPayload.rows.length > unmappedRowCount;
+      const decision = await openUploadSkuWarningDialog({
+        unmappedRows: mappingInspection.unmappedRows,
+        canContinue: canContinueWithWarning,
+      });
+      if (decision.action === "cancel") {
+        setStatus("Upload cancelled.");
+        return;
+      }
+      if (decision.action === "save-continue") {
+        await saveAdditionalSkuMappingOverrides(decision.rows || []);
+        setStatus(`Saved ${integer((decision.rows || []).length)} SKU mapping${(decision.rows || []).length === 1 ? "" : "s"}. Re-checking upload...`);
+        mappingInspection = await inspectUploadSkuMappings(uploadPayload.rows);
+        continue;
+      }
+      uploadWarnings = mergeUploadSkuWarningSummaries(uploadWarnings, mappingInspection.unmappedRows);
+      break;
+    }
 
     // Chunk uploads by date to avoid sending huge JSON payloads (monthly TikTok exports can be 50MB+).
     const chunks = chunkRowsByDate(uploadPayload.rows, 1500);
@@ -5506,6 +5990,25 @@ dataUploadForm.addEventListener("submit", async (event) => {
       const chunk = chunks[index];
       const range = chunk.uploadedDates.length ? ` (${chunk.uploadedDates[0]} to ${chunk.uploadedDates[chunk.uploadedDates.length - 1]})` : "";
       setStatus(`Uploading ${label} chunk ${index + 1}/${chunks.length}${range}...`);
+      let kpiDelta = null;
+      if (uploadType === "orders") {
+        const kpiRows = [];
+        chunk.uploadedDates.forEach((date) => {
+          const rowsForDate = uploadPayload.normalizedRowsByPaidDate?.[date] || [];
+          if (rowsForDate.length) kpiRows.push(...rowsForDate);
+        });
+        const uniqueCustomerKeys = new Set(
+          kpiRows
+            .map((row) => cleanUploadText(row.customer_proxy).toLowerCase().replace(/\s+/g, " ").trim())
+            .filter(Boolean),
+        );
+        kpiDelta = buildKpiDeltaFromNormalizedRows(kpiRows, {
+          files: index === 0 ? Number(uploadPayload.fileCount || 0) : 0,
+          rawRowCount: index === 0 ? Number(uploadPayload.rawRowCount || 0) : 0,
+          sourceRowCount: kpiRows.length,
+          uniqueCustomers: uniqueCustomerKeys.size,
+        });
+      }
       const chunkPayload = {
         platform: uploadPayload.platform,
         rows: chunk.rows,
@@ -5513,10 +6016,12 @@ dataUploadForm.addEventListener("submit", async (event) => {
         rawRowCount: index === 0 ? uploadPayload.rawRowCount : 0,
         sourceRowCount: index === 0 ? uploadPayload.sourceRowCount : 0,
         writeAudit: false,
+        kpiDelta,
       };
       const response = await postJson(url, chunkPayload);
       totalRowsWritten += Number(response?.upload?.rowsWritten || 0);
       totalSkuRowsWritten += Number(response?.upload?.skuRowsWritten || 0);
+      uploadWarnings = mergeUploadSkuWarningSummaries(uploadWarnings, response?.upload?.unmappedRows || []);
     }
 
     // Finalize a single audit record so the sidebar "Data as of" stays correct.
@@ -5528,7 +6033,6 @@ dataUploadForm.addEventListener("submit", async (event) => {
         uploadedDates: uploadPayload.uploadedDates,
         rowsWritten: totalRowsWritten,
         skuRowsWritten: totalSkuRowsWritten,
-        kpiDelta: uploadType === "orders" ? uploadPayload.kpiDelta : null,
       });
 
       await loadWorkspace();
@@ -5543,8 +6047,11 @@ dataUploadForm.addEventListener("submit", async (event) => {
     const skuRowsWritten = totalSkuRowsWritten || 0;
     const uploadedDates = Array.isArray(uploadPayload.uploadedDates) ? uploadPayload.uploadedDates.filter(Boolean).slice().sort() : [];
     const uploadedRange = uploadedDates.length ? ` (${uploadedDates[0]} to ${uploadedDates[uploadedDates.length - 1]})` : "";
+    const warningSuffix = uploadWarnings.length
+      ? ` Warning: ${integer(uploadWarnings.length)} unmapped SKU${uploadWarnings.length === 1 ? "" : "s"} were skipped from core-product planning math. Map them in the popup or Settings so future uploads stay accurate.`
+      : "";
     setStatus(
-      `${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable listing rows, ${integer(rowsWritten)} lean core-product rows${skuRowsWritten ? `, ${integer(skuRowsWritten)} lean SKU sales rows` : ""} across ${uploadedDates.length} dates${uploadedRange}.`,
+      `${label.charAt(0).toUpperCase() + label.slice(1)} uploaded: ${integer(uploadPayload.rawRowCount)} raw rows, ${integer(uploadPayload.sourceRowCount)} usable listing rows, ${integer(rowsWritten)} lean core-product rows${skuRowsWritten ? `, ${integer(skuRowsWritten)} lean SKU sales rows` : ""} across ${uploadedDates.length} dates${uploadedRange}.${warningSuffix}`,
     );
   } catch (error) {
     setStatus(error.message || "Could not upload files.", true);
@@ -5783,6 +6290,12 @@ forecastMonthPicker.addEventListener("change", () => {
   loadForecastDialogMonth(forecastMonthPicker.value);
 });
 
+if (forecastCopyMixMonth) {
+  forecastCopyMixMonth.addEventListener("change", () => {
+    renderForecastCopyMixPreview(forecastCopyMixMonth.value);
+  });
+}
+
 forecastYearInput.addEventListener("change", () => {
   const nextYear = Number(forecastYearInput.value || forecastYear);
   if (!Number.isFinite(nextYear) || nextYear < 2024) return;
@@ -5809,6 +6322,7 @@ resultsTabButtons.forEach((button) => {
 forecastProductMixInputs.addEventListener("input", () => {
   updateForecastMixTotal();
   syncForecastInputsFromProductLifts({ baselineUnits: baselineUnitsLookup(), readOnly: false });
+  renderForecastCopyMixPreview(forecastCopyMixMonth instanceof HTMLSelectElement ? forecastCopyMixMonth.value : "");
 });
 
 resetForecastSettingsButton.addEventListener("click", () => {
@@ -5826,6 +6340,7 @@ resetForecastSettingsButton.addEventListener("click", () => {
   if (forecastLiftGuidance) {
     forecastLiftGuidance.textContent = "Either set Target uplift, or set Lift % per product (then Target uplift auto-calculates).";
   }
+  renderForecastCopyMixPreview(forecastCopyMixMonth instanceof HTMLSelectElement ? forecastCopyMixMonth.value : "", baselineMix);
 });
 
 forecastCopyMixApplyButton?.addEventListener("click", () => {

@@ -85,6 +85,7 @@ const FIRESTORE_KPI_CACHE_COLLECTION = "planningTiktokKpiCache";
 const FIRESTORE_KPI_CACHE_META_DOC = "current";
 const FIRESTORE_KPI_CACHE_CHUNK_PREFIX = "chunk_";
 const FIRESTORE_KPI_CACHE_CHUNK_SIZE = 900_000;
+const FIRESTORE_KPI_CHUNKS_PER_BATCH = 4;
 
 function safeNumber(value: unknown) {
   const numeric = Number(value ?? 0);
@@ -224,6 +225,51 @@ function inRange(date: string, startDate: string | null, endDate: string | null)
   return date >= startDate && date <= endDate;
 }
 
+function parseIsoDate(date: string | null | undefined) {
+  if (!date) return null;
+  const normalized = asDate(date);
+  if (!normalized) return null;
+  const parsed = new Date(`${normalized}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toIsoDate(date: Date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(date: string, offset: number) {
+  const parsed = parseIsoDate(date);
+  if (!parsed) return null;
+  parsed.setUTCDate(parsed.getUTCDate() + offset);
+  return toIsoDate(parsed);
+}
+
+function addYears(date: string, offset: number) {
+  const parsed = parseIsoDate(date);
+  if (!parsed) return null;
+  parsed.setUTCFullYear(parsed.getUTCFullYear() + offset);
+  return toIsoDate(parsed);
+}
+
+function daysBetweenInclusive(startDate: string | null, endDate: string | null) {
+  const start = parseIsoDate(startDate);
+  const end = parseIsoDate(endDate);
+  if (!start || !end) return null;
+  const diff = Math.round((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+  if (!Number.isFinite(diff) || diff < 0) return null;
+  return diff + 1;
+}
+
+function pctDelta(currentValue: number, previousValue: number) {
+  const prev = safeNumber(previousValue);
+  const curr = safeNumber(currentValue);
+  if (prev <= 0) return null;
+  return (curr - prev) / prev;
+}
+
 function fallbackEmptyCache(): CacheFile {
   return {
     generated_at: new Date().toISOString(),
@@ -293,9 +339,9 @@ export async function persistKpiCache(cache: CacheFile, preferredDataSource?: Pl
   const previousMeta = await collection.doc(FIRESTORE_KPI_CACHE_META_DOC).get().catch(() => null);
   const previousCount = previousMeta?.exists ? Math.max(0, Number(previousMeta.get("chunk_count") || 0)) : 0;
 
-  for (let start = 0; start < chunks.length; start += 400) {
+  for (let start = 0; start < chunks.length; start += FIRESTORE_KPI_CHUNKS_PER_BATCH) {
     const batch = db.batch();
-    const slice = chunks.slice(start, start + 400);
+    const slice = chunks.slice(start, start + FIRESTORE_KPI_CHUNKS_PER_BATCH);
     slice.forEach((data, offset) => {
       const chunkIndex = start + offset;
       batch.set(collection.doc(chunkDocId(chunkIndex)), {
@@ -476,6 +522,13 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
   const filteredProducts = (bucket.products || []).filter((row) => monthOverlapsRange(row.reporting_month, range.startDate, range.endDate));
   const filteredCities = (bucket.cities || []).filter((row) => monthOverlapsRange(row.reporting_month, range.startDate, range.endDate));
   const filteredZips = (bucket.zips || []).filter((row) => monthOverlapsRange(row.reporting_month, range.startDate, range.endDate));
+  const sliceDayCount = daysBetweenInclusive(range.startDate, range.endDate);
+  const priorEndDate = range.startDate ? addDays(range.startDate, -1) : null;
+  const priorStartDate = (priorEndDate && sliceDayCount) ? addDays(priorEndDate, -(sliceDayCount - 1)) : null;
+  const priorDaily = (bucket.daily || []).filter((row) => inRange(row.reporting_date, priorStartDate, priorEndDate));
+  const yoyStartDate = range.startDate ? addYears(range.startDate, -1) : null;
+  const yoyEndDate = range.endDate ? addYears(range.endDate, -1) : null;
+  const yoyDaily = (bucket.daily || []).filter((row) => inRange(row.reporting_date, yoyStartDate, yoyEndDate));
 
   // Exact distinct-customer logic across the full selected range (no per-day double counting).
   const decodedIndex = getDecodedCustomerIndex(bucket);
@@ -532,6 +585,13 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
   const repeatCustomerRate = uniqueCustomers > 0 ? repeatCustomers / uniqueCustomers : 0;
   const aov = paidOrders > 0 ? grossProductSales / paidOrders : 0;
   const unitsPerPaidOrder = paidOrders > 0 ? unitsSold / paidOrders : 0;
+  const priorGrossSales = sum(priorDaily, (row) => row.gross_product_sales);
+  const priorNetSales = sum(priorDaily, (row) => row.net_product_sales);
+  const priorPaidOrders = sum(priorDaily, (row) => row.paid_orders);
+  const priorUnitsSold = sum(priorDaily, (row) => row.units_sold);
+  const yoyGrossSales = sum(yoyDaily, (row) => row.gross_product_sales);
+  const yoyNetSales = sum(yoyDaily, (row) => row.net_product_sales);
+  const netToGrossRatio = grossProductSales > 0 ? netProductSales / grossProductSales : 0;
 
   const statusCounts = new Map<string, number>();
   filteredDaily.forEach((row) => {
@@ -573,6 +633,19 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
     unit_mix_pct: unitsSold > 0 ? row.units_sold / unitsSold : 0,
     sales_mix_pct: grossProductSales > 0 ? row.gross_sales / grossProductSales : 0,
   }));
+  const estimatedCogsTotal = sum(productRows, (row) => row.estimated_cogs);
+  const estimatedContribution = netProductSales - estimatedCogsTotal;
+  const contributionMarginPct = netProductSales > 0 ? estimatedContribution / netProductSales : 0;
+  const topProduct = productRows[0] || null;
+  const topProductSalesShare = topProduct && grossProductSales > 0 ? safeNumber(topProduct.gross_sales) / grossProductSales : 0;
+  const top3SalesShare = grossProductSales > 0
+    ? productRows.slice(0, 3).reduce((acc, row) => acc + safeNumber(row.gross_sales), 0) / grossProductSales
+    : 0;
+  const concentrationRisk = top3SalesShare >= 0.8
+    ? "high"
+    : top3SalesShare >= 0.65
+      ? "medium"
+      : "low";
 
   const citySummary = new Map<string, { city: string; state: string; orders: number; unique_customers: number }>();
   filteredCities.forEach((row) => {
@@ -600,6 +673,97 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
     zipSummary.set(zipcode, existing);
   });
   const zipRows = sortByValueDesc(Array.from(zipSummary.values()), "unique_customers").slice(0, 20);
+  const monthlyCustomerTrendMap = new Map<string, { month: string; new_customers: number; repeat_customers: number; unique_customers: number }>();
+  (bucket.daily || []).forEach((row) => {
+    const month = String(row.reporting_date || "").slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) return;
+    const existing = monthlyCustomerTrendMap.get(month) || { month, new_customers: 0, repeat_customers: 0, unique_customers: 0 };
+    existing.new_customers += safeNumber(row.new_customers || 0);
+    existing.repeat_customers += safeNumber(row.repeat_customers || 0);
+    existing.unique_customers += safeNumber(row.unique_customers || 0);
+    monthlyCustomerTrendMap.set(month, existing);
+  });
+  const monthlyCustomerTrend = Array.from(monthlyCustomerTrendMap.values())
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .slice(-6)
+    .map((row) => ({
+      ...row,
+      repeat_rate: row.unique_customers > 0 ? row.repeat_customers / row.unique_customers : 0,
+    }));
+
+  const totalCityOrders = sum(cityRows, (row) => row.orders);
+  const cityRevenueEstimates = cityRows.map((row) => ({
+    city: row.city,
+    state: row.state,
+    estimated_revenue: totalCityOrders > 0 ? grossProductSales * (safeNumber(row.orders) / totalCityOrders) : 0,
+    customers: safeNumber(row.unique_customers),
+    orders: safeNumber(row.orders),
+    orders_per_customer: safeNumber(row.unique_customers) > 0 ? safeNumber(row.orders) / safeNumber(row.unique_customers) : 0,
+  }));
+  const latestMonth = filteredCities
+    .map((row) => String(row.reporting_month || "").slice(0, 7))
+    .filter((month) => /^\d{4}-\d{2}$/.test(month))
+    .sort()
+    .at(-1) || null;
+  const priorMonth = latestMonth ? addMonths(latestMonth, -1) : null;
+  const growthByCity = new Map<string, { city: string; state: string; latest_customers: number; prior_customers: number }>();
+  filteredCities.forEach((row) => {
+    const month = String(row.reporting_month || "").slice(0, 7);
+    if (month !== latestMonth && month !== priorMonth) return;
+    const city = String(row.city || "").trim() || "Unknown";
+    const state = String(row.state || "").trim();
+    const key = `${city}__${state}`;
+    const existing = growthByCity.get(key) || { city, state, latest_customers: 0, prior_customers: 0 };
+    if (month === latestMonth) existing.latest_customers += safeNumber(row.unique_customers);
+    if (month === priorMonth) existing.prior_customers += safeNumber(row.unique_customers);
+    growthByCity.set(key, existing);
+  });
+  const fastGrowingCities = Array.from(growthByCity.values())
+    .map((row) => ({
+      ...row,
+      growth_pct: row.prior_customers > 0 ? (row.latest_customers - row.prior_customers) / row.prior_customers : null,
+      growth_units: row.latest_customers - row.prior_customers,
+    }))
+    .filter((row) => row.latest_customers >= 30 && row.growth_units > 0)
+    .sort((a, b) => safeNumber(b.growth_pct) - safeNumber(a.growth_pct))
+    .slice(0, 5);
+
+  const watchouts: Array<{ level: "critical" | "warning" | "watch"; title: string; detail: string }> = [];
+  if (repeatCustomerRate < 0.12) {
+    watchouts.push({
+      level: "warning",
+      title: "Repeat rate is below healthy target",
+      detail: `Repeat rate is ${(repeatCustomerRate * 100).toFixed(1)}%. Target is 12%+.`,
+    });
+  }
+  if (netToGrossRatio < 0.82) {
+    watchouts.push({
+      level: "warning",
+      title: "Net realization is low",
+      detail: `Net-to-gross is ${(netToGrossRatio * 100).toFixed(1)}%. This can signal heavy discount/refund drag.`,
+    });
+  }
+  if (topProductSalesShare > 0.55) {
+    watchouts.push({
+      level: topProductSalesShare > 0.65 ? "critical" : "warning",
+      title: "Single-SKU dependence risk",
+      detail: `${topProduct?.product_name || "Top product"} drives ${(topProductSalesShare * 100).toFixed(1)}% of gross sales.`,
+    });
+  }
+  if ((paidOrders > 0 ? canceledOrders / paidOrders : 0) > 0.03) {
+    watchouts.push({
+      level: "watch",
+      title: "Cancellation rate is elevated",
+      detail: `Canceled orders are ${((paidOrders > 0 ? canceledOrders / paidOrders : 0) * 100).toFixed(1)}% of paid orders.`,
+    });
+  }
+  if (filteredZips.filter((row) => !String(row.zipcode || "").trim()).length > 0) {
+    watchouts.push({
+      level: "watch",
+      title: "Missing ZIP coverage",
+      detail: "Some rows are missing ZIP data. Geo targeting precision may be lower for this slice.",
+    });
+  }
 
   const dailyRows = filteredDaily.map((row) => {
     return {
@@ -663,8 +827,15 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
         fees: 0,
         adjustments: 0,
         payout_amount: netProductSales,
+        estimated_cogs: estimatedCogsTotal,
+        estimated_contribution: estimatedContribution,
+        contribution_margin_pct: contributionMarginPct,
+        net_to_gross_ratio: netToGrossRatio,
       },
-      expenseRows: [],
+      expenseRows: [
+        { category: "Estimated COGS", amount: estimatedCogsTotal },
+        { category: "Estimated contribution", amount: Math.max(estimatedContribution, 0) },
+      ],
       expenseDetailRows: [],
       reconciliationSummary: {
         matched_orders: paidOrders,
@@ -693,7 +864,13 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
         listingRows: productRows.length,
         salesUnits: unitsSold,
         grossSales: grossProductSales,
-        estimatedCogs: sum(productRows, (row) => row.estimated_cogs),
+        estimatedCogs: estimatedCogsTotal,
+        estimatedContribution,
+        contributionMarginPct,
+        topProductName: topProduct?.product_name || null,
+        topProductSalesShare,
+        top3SalesShare,
+        concentrationRisk,
         sampleUnits: 0,
         replacementUnits: 0,
       },
@@ -712,6 +889,12 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
       cityRows: cityRows.slice(0, 10),
       zipRows,
       cohortRows,
+      monthlyTrendRows: monthlyCustomerTrend,
+      opportunitySnapshot: {
+        topRevenueCities: sortByValueDesc(cityRevenueEstimates, "estimated_revenue").slice(0, 5),
+        highestRepeatProxyCities: sortByValueDesc(cityRevenueEstimates, "orders_per_customer").slice(0, 5),
+        fastGrowingCities,
+      },
       targetingSnapshot: {
         targetCityCustomers: highlightedCity?.unique_customers || 0,
         targetCityOrders: highlightedCity?.orders || 0,
@@ -734,8 +917,9 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
         `Coverage: ${bucket.coverage.start_date || "n/a"} to ${bucket.coverage.end_date || "n/a"}.`,
         `Order bucket: ${orderBucket}.`,
         "Unique/new/repeat customers use exact distinct counts via a compressed customer index.",
-        "Finance tab is order-export based (statement-ledger fields are not loaded in this lean cache).",
+        "Finance now includes estimated COGS and contribution from mapped product mix; fees and shipping are still not statement-ledger complete.",
       ],
+      watchouts,
       kpiRows: [
         {
           metric: "Gross product sales",
@@ -761,6 +945,39 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
       ],
     },
   };
+  const executiveSummary = [
+    {
+      key: "gross_sales",
+      label: "Gross sales",
+      value: grossProductSales,
+      delta_vs_prior: pctDelta(grossProductSales, priorGrossSales),
+      delta_vs_yoy: pctDelta(grossProductSales, yoyGrossSales),
+    },
+    {
+      key: "net_sales",
+      label: "Net sales",
+      value: netProductSales,
+      delta_vs_prior: pctDelta(netProductSales, priorNetSales),
+      delta_vs_yoy: pctDelta(netProductSales, yoyNetSales),
+    },
+    {
+      key: "paid_orders",
+      label: "Paid orders",
+      value: paidOrders,
+      delta_vs_prior: pctDelta(paidOrders, priorPaidOrders),
+      delta_vs_yoy: pctDelta(paidOrders, sum(yoyDaily, (row) => row.paid_orders)),
+    },
+    {
+      key: "units_sold",
+      label: "Units sold",
+      value: unitsSold,
+      delta_vs_prior: pctDelta(unitsSold, priorUnitsSold),
+      delta_vs_yoy: pctDelta(unitsSold, sum(yoyDaily, (row) => row.units_sold)),
+    },
+  ];
+  const executiveWatchouts = watchouts.length
+    ? watchouts
+    : [{ level: "watch", title: "No major red flags in this slice", detail: "Core health checks are currently inside target thresholds." }];
 
   return {
     filters: {
@@ -792,6 +1009,30 @@ export async function buildTiktokKpiPayload(args: QueryArgs) {
       newCustomers,
       repeatCustomers,
       repeatCustomerRate,
+    },
+    executive: {
+      summary: executiveSummary,
+      watchouts: executiveWatchouts,
+      profit: {
+        estimated_cogs: estimatedCogsTotal,
+        estimated_contribution: estimatedContribution,
+        contribution_margin_pct: contributionMarginPct,
+        net_to_gross_ratio: netToGrossRatio,
+      },
+      concentration: {
+        top_product_name: topProduct?.product_name || null,
+        top_product_sales_share: topProductSalesShare,
+        top3_sales_share: top3SalesShare,
+        risk_level: concentrationRisk,
+      },
+      customerMomentum: {
+        trendRows: monthlyCustomerTrend,
+      },
+      geography: {
+        topRevenueCities: sortByValueDesc(cityRevenueEstimates, "estimated_revenue").slice(0, 5),
+        highestRepeatProxyCities: sortByValueDesc(cityRevenueEstimates, "orders_per_customer").slice(0, 5),
+        fastGrowingCities,
+      },
     },
     tabs,
   };

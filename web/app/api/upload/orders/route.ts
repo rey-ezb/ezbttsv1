@@ -37,7 +37,12 @@ export async function POST(request: NextRequest) {
       },
       preferredDataSource,
     );
-    return NextResponse.json({ ok: true, upload });
+    const kpiDelta = payload?.kpiDelta && typeof payload.kpiDelta === "object" ? payload.kpiDelta : null;
+    let kpi = null;
+    if (kpiDelta) {
+      kpi = await mergeAndPersistKpiCacheDelta(kpiDelta, preferredDataSource);
+    }
+    return NextResponse.json({ ok: true, upload, kpi });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not upload order rows." },

@@ -195,27 +195,33 @@
                 <span class="forecast-status-pill" id="forecast-status-pill">New month setting</span>
                 <span class="forecast-baseline-copy" id="forecast-baseline-copy">Using the current selected baseline window.</span>
               </div>
-              <div class="forecast-dialog-status-row forecast-dialog-copy-row" id="forecast-copy-mix-row">
-                <div class="forecast-copy-control">
-                  <label for="forecast-copy-mix-month">Copy mix from actual month</label>
-                  <div class="forecast-copy-control-row">
-                    <select id="forecast-copy-mix-month"></select>
-                    <button type="button" class="secondary" id="forecast-copy-mix-apply">Copy mix</button>
+              <div class="forecast-setup-grid">
+                <section class="forecast-setup-card forecast-setup-card-copy">
+                  <div class="forecast-dialog-status-row forecast-dialog-copy-row" id="forecast-copy-mix-row">
+                    <div class="forecast-copy-control">
+                      <label for="forecast-copy-mix-month">Copy mix from actual month</label>
+                      <div class="forecast-copy-control-row">
+                        <select id="forecast-copy-mix-month"></select>
+                        <button type="button" class="secondary" id="forecast-copy-mix-apply">Copy mix</button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-              <p class="forecast-copy-hint" id="forecast-copy-mix-hint">Copy pulls the actual mix for that month from your historical units, then re-balances to 100%. Products with zero units that month stay at 0%.</p>
-              <div class="forecast-dialog-grid">
-                <label>Year
-                  <input type="number" id="forecast-year-input" step="1" min="2024" max="2035">
-                </label>
-                <label>Month
-                  <select id="forecast-month-picker"></select>
-                </label>
-                <label>Target uplift vs baseline (%)
-                  <small class="forecast-uplift-suggestion" id="forecast-uplift-suggestion" aria-live="polite"></small>
-                  <input type="number" id="forecast-month-uplift" step="0.1">
-                </label>
+                  <p class="forecast-copy-hint" id="forecast-copy-mix-hint">Copy pulls the actual mix for that month from your historical units, then re-balances to 100%. Products with zero units that month stay at 0%.</p>
+                </section>
+                <section class="forecast-setup-card forecast-setup-card-plan">
+                  <div class="forecast-dialog-grid">
+                    <label>Year
+                      <input type="number" id="forecast-year-input" step="1" min="2024" max="2035">
+                    </label>
+                    <label>Month
+                      <select id="forecast-month-picker"></select>
+                    </label>
+                    <label>Target uplift vs baseline (%)
+                      <small class="forecast-uplift-suggestion" id="forecast-uplift-suggestion" aria-live="polite"></small>
+                      <input type="number" id="forecast-month-uplift" step="0.1">
+                    </label>
+                  </div>
+                </section>
               </div>
               <div class="forecast-helper-card">
                 <p class="forecast-helper-one">
@@ -767,6 +773,11 @@
             <div class="kpi-card-grid" id="kpi-cards-grid"></div>
           </section>
 
+          <section class="panel panel-kpi-exec glass-sheen">
+            <div class="kpi-exec-grid" id="kpi-exec-grid"></div>
+            <div class="kpi-exec-watchouts" id="kpi-exec-watchouts"></div>
+          </section>
+
           <section class="panel panel-kpi-detail glass-sheen">
             <details id="kpi-detail-toggle" class="disclosure-panel">
               <summary class="disclosure-summary">
@@ -997,6 +1008,43 @@
           <button type="submit" class="primary" id="settings-auth-submit">Unlock</button>
         </div>
         <div class="status-line" id="settings-auth-status" aria-live="polite"></div>
+      </form>
+    </dialog>
+    <dialog class="auth-dialog upload-sku-warning-dialog" id="upload-sku-warning-dialog">
+      <form method="dialog" class="auth-dialog-card glass-sheen upload-sku-warning-card">
+        <div class="auth-dialog-head">
+          <p class="eyebrow">Uploads</p>
+          <h2>Review new SKU mappings</h2>
+          <p class="panel-copy" id="upload-sku-warning-copy">We found new SKUs in this upload.</p>
+        </div>
+        <div class="table-wrap upload-sku-warning-table">
+          <table class="data-grid">
+            <thead>
+              <tr>
+                <th class="text-left">SKU</th>
+                <th class="text-left">Listing</th>
+                <th>Dates</th>
+                <th>Units</th>
+                <th>Type</th>
+                <th class="text-left">SKU ID</th>
+                <th class="text-left">Listing Name</th>
+                <th>Product 1</th>
+                <th>Product 2</th>
+                <th>Product 3</th>
+                <th>Product 4</th>
+              </tr>
+            </thead>
+            <tbody id="upload-sku-warning-body">
+              <tr><td colspan="11" class="empty">Checking for new SKUs...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="actions auth-dialog-actions upload-sku-warning-actions">
+          <button type="button" id="upload-sku-warning-cancel">Cancel</button>
+          <button type="button" id="upload-sku-warning-continue">Continue upload with warning</button>
+          <button type="button" class="primary" id="upload-sku-warning-save-continue">Save mappings and continue</button>
+        </div>
+        <div class="status-line" id="upload-sku-warning-status" aria-live="polite"></div>
       </form>
     </dialog>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>

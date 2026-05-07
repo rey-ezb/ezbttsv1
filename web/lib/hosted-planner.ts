@@ -16,9 +16,11 @@ import {
   expandMappedDemandRows,
   normalizeMappedProductName,
   parseTiktokSkuMappingCsv,
+  summarizeUnmappedDemandRows,
   type DemandUploadInputRow,
   type SkuSalesSummaryRow,
   type TikTokSkuMapping,
+  type UnmappedDemandRowSummary,
 } from "./sku-mapping";
 
 type CampaignEventDoc = {
@@ -2148,9 +2150,10 @@ export async function saveHostedDemandUpload(
   const isOrdersUpload = collectionName === DEMAND_COLLECTION_PAID;
   const paidRows = isOrdersUpload ? rowsForDateBasis(rows, DATE_BASIS_PAID) : rows;
   const createdRows = isOrdersUpload ? rowsForDateBasis(rows, DATE_BASIS_CREATED) : [];
-  const mappedPaidRows = expandMappedDemandRows(paidRows, skuMappings);
+  const unmappedRows: UnmappedDemandRowSummary[] = summarizeUnmappedDemandRows(rows, skuMappings);
+  const mappedPaidRows = expandMappedDemandRows(paidRows, skuMappings, { onUnmapped: "skip" });
   const normalizedRows = normalizeUploadedDemandRows(mappedPaidRows);
-  const mappedCreatedRows = isOrdersUpload ? expandMappedDemandRows(createdRows, skuMappings) : [];
+  const mappedCreatedRows = isOrdersUpload ? expandMappedDemandRows(createdRows, skuMappings, { onUnmapped: "skip" }) : [];
   const normalizedCreatedRows = isOrdersUpload ? normalizeUploadedDemandRows(mappedCreatedRows) : [];
   if (!normalizedRows.length && !normalizedCreatedRows.length) {
     throw new Error("No usable planning rows were found in the uploaded file.");
@@ -2204,6 +2207,7 @@ export async function saveHostedDemandUpload(
       skuRowsWritten,
       createdRowsWritten: normalizedCreatedRows.length,
       dataSource: "local",
+      unmappedRows,
     };
   }
 
@@ -2248,6 +2252,17 @@ export async function saveHostedDemandUpload(
     rowsWritten: normalizedRows.length,
     skuRowsWritten,
     createdRowsWritten: normalizedCreatedRows.length,
+    unmappedRows,
+  };
+}
+
+export async function inspectHostedDemandUploadSkuMappings(
+  rows: UploadedDemandRow[],
+  preferredDataSource?: PlannerDataSourceMode | null,
+) {
+  const skuMappings = await loadTikTokSkuMappings(preferredDataSource);
+  return {
+    unmappedRows: summarizeUnmappedDemandRows(rows, skuMappings),
   };
 }
 

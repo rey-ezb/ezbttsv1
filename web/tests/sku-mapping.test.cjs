@@ -179,6 +179,91 @@ test("rejects unmapped TikTok listing rows instead of guessing from title text",
   );
 });
 
+test("can skip unmapped TikTok rows when upload warning mode is enabled", () => {
+  const { expandMappedDemandRows, parseTiktokSkuMappingCsv } = requireTs("lib/sku-mapping.ts");
+  const mappings = parseTiktokSkuMappingCsv("SKU ID,Product Name,Product 1,Product 2,Product 3,Product 4\nKNOWN,Known Product,Birria Bombs 2P,,,");
+
+  const rows = expandMappedDemandRows(
+    [
+      {
+        order_date: "2026-04-01",
+        platform: "TikTok",
+        product_name: "Known Product",
+        seller_sku_resolved: "KNOWN",
+        net_units: 2,
+        gross_sales: 40,
+      },
+      {
+        order_date: "2026-04-01",
+        platform: "TikTok",
+        product_name: "Unknown TikTok marketing title",
+        seller_sku_resolved: "UNKNOWN",
+        net_units: 1,
+        gross_sales: 20,
+      },
+    ],
+    mappings,
+    { onUnmapped: "skip" },
+  );
+
+  assert.deepEqual(rows, [
+    {
+      date: "2026-04-01",
+      platform: "TikTok",
+      product_name: "Birria Bomb 2-Pack",
+      seller_sku_resolved: "KNOWN",
+      net_units: 2,
+      gross_sales: 40,
+      net_gross_sales: 40,
+    },
+  ]);
+});
+
+test("summarizes unmapped TikTok rows for upload warning review", () => {
+  const { parseTiktokSkuMappingCsv, summarizeUnmappedDemandRows } = requireTs("lib/sku-mapping.ts");
+  const mappings = parseTiktokSkuMappingCsv("SKU ID,Product Name,Product 1,Product 2,Product 3,Product 4\nKNOWN,Known Product,Birria Bombs 2P,,,");
+
+  const rows = summarizeUnmappedDemandRows(
+    [
+      {
+        order_date: "2026-04-01",
+        paid_date: "2026-04-01",
+        platform: "TikTok",
+        product_name: "New Variety Trio",
+        sku_id: "NEW_BUNDLE",
+        seller_sku_resolved: "NEW_BUNDLE",
+        net_units: 2,
+        gross_sales: 60,
+      },
+      {
+        order_date: "2026-04-03",
+        paid_date: "2026-04-03",
+        platform: "TikTok",
+        product_name: "New Variety Trio",
+        sku_id: "NEW_BUNDLE",
+        seller_sku_resolved: "NEW_BUNDLE",
+        net_units: 1,
+        gross_sales: 30,
+      },
+    ],
+    mappings,
+  );
+
+  assert.deepEqual(rows, [
+    {
+      sku_id: "NEW_BUNDLE",
+      seller_sku_resolved: "NEW_BUNDLE",
+      product_name: "New Variety Trio",
+      platform: "TikTok",
+      row_count: 2,
+      net_units: 3,
+      gross_sales: 90,
+      first_date: "2026-04-01",
+      last_date: "2026-04-03",
+    },
+  ]);
+});
+
 test("skips explicitly ignored non-planning mapped SKUs", () => {
   const { buildSkuSalesSummaryRows, expandMappedDemandRows, parseTiktokSkuMappingCsv } = requireTs("lib/sku-mapping.ts");
   const mappings = parseTiktokSkuMappingCsv("SKU ID,Product Name,Product 1,Product 2,Product 3,Product 4\nBOX,Collectors Box,Ignore,,,");
